@@ -53,7 +53,7 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
     # K线数据JSON
     K线JSON = '[]'
     if 原始K线数据 is not None and len(原始K线数据) > 0:
-        cols = [c for c in ['日期','前复权_开盘','前复权_最高','前复权_最低','前复权_收盘','不复权_开盘','不复权_最高','不复权_最低','不复权_收盘','RSI_14','RSI_最高价','RSI_收盘价','RSI_最低价','RSI_均线_20','ATR_14'] if c in 原始K线数据.columns]
+        cols = [c for c in ['完整时间','日期','前复权_开盘','前复权_最高','前复权_最低','前复权_收盘','不复权_开盘','不复权_最高','不复权_最低','不复权_收盘','RSI_14','RSI_最高价','RSI_收盘价','RSI_最低价','RSI_均线_20','ATR_14'] if c in 原始K线数据.columns]
         if '前复权_收盘' in 原始K线数据.columns and len(cols) >= 3:
             # 反推价和哨兵价必须跟随回测所选 RSI 价格源。RSI_14 是兼容字段，
             # 这里仍显式选择高/收/低价，避免报告层固定使用收盘价。
@@ -102,8 +102,8 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
             真实成交索引 = {}
             for _state_idx, _state in 真实K线状态查询.items():
                 _action = str(_state.get('最终动作', '') or '')
-                if '买入' in _action or '卖出' in _action:
-                    _kind = '买入' if '买入' in _action else '卖出'
+                if '买入' in _action or '加仓' in _action or '卖出' in _action:
+                    _kind = '卖出' if '卖出' in _action else '买入'
                     _day = str(_state.get('日期', '') or '')[:10]
                     _seq = _state.get('买入序号')
                     _group = _state.get('持仓组ID')
@@ -119,6 +119,16 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
             used_action_indexes = set()
             enriched_records = []
             for record in 交易记录:
+                existing_index = record.get('K线索引')
+                try:
+                    existing_index = int(float(existing_index))
+                except (TypeError, ValueError):
+                    existing_index = None
+                if existing_index is not None and existing_index in 真实K线状态查询:
+                    record['K线索引'] = existing_index
+                    used_action_indexes.add(existing_index)
+                    enriched_records.append(record)
+                    continue
                 day = str(record.get('时间', '') or '')[:10]
                 kind = str(record.get('类型', '') or '')
                 seq = record.get('序号')
@@ -151,12 +161,21 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
             _当前现金 = _初始资金
             _当前持股 = 0
             _权益列表 = []
+            _组合实际回放 = bool(回测结果.get('运行参数', {}).get('组合实际回放'))
+            _组合成交按K线 = {}
+            if _组合实际回放 and _交易明细_df is not None:
+                for _, _r in _交易明细_df.iterrows():
+                    try:
+                        _index = int(float(_r.get('K线索引')))
+                    except (TypeError, ValueError):
+                        continue
+                    _组合成交按K线.setdefault(_index, []).append(_r)
             # 按持仓组关联买卖；兼容旧结果时回退到序号。
             _买入记录 = {}  # {序号: {时间, 价, 金额, 组}}
             _卖出记录 = {}  # {序号: {时间, 价, 金额}}
             _买入组 = {}
             _待卖出组 = {}
-            if _交易明细_df is not None and len(_交易明细_df) > 0:
+            if not _组合实际回放 and _交易明细_df is not None and len(_交易明细_df) > 0:
                 for _, _r in _交易明细_df.iterrows():
                     try:
                         _seq = int(_r['序号'])
@@ -171,7 +190,6 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
                         elif _tp == '卖出':
                             _卖价 = float(_r['卖出价']) if not pd.isna(_r.get('卖出价')) else 0
                             _盈亏 = float(_r['盈亏比例']) if not pd.isna(_r.get('盈亏比例')) else 0
-                            _卖金额 = _买入记录[_seq]['金额'] * (1 + _盈亏)
                             _待卖出组[_group] = {'时间': str(_r['时间']).strip()[:16], '价': _卖价, '盈亏': _盈亏}
                     except: pass# 哨兵价跟踪变量
             for _group, _sell in _待卖出组.items():
@@ -189,8 +207,13 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
             _已形成哨兵价 = False
             _前一根哨兵价 = None
             for idx, row in 原始K线数据[cols].iterrows():
-                完整时间_ = str(idx) if hasattr(idx, 'strftime') else str(idx)
-                完整时间_ = 完整时间_[:16]
+                _row_time = row.get('完整时间', None)
+                if _row_time is not None and not pd.isna(_row_time):
+                    完整时间_ = str(_row_time)[:16]
+                elif hasattr(idx, 'strftime'):
+                    完整时间_ = idx.strftime('%Y-%m-%d %H:%M')
+                else:
+                    完整时间_ = str(row.get('日期', idx))[:16]
                 d = {}
                 for col in cols:
                     val = row[col]
@@ -314,7 +337,13 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
                                 f"最终哨兵 {round(_哨兵价当前, 2)}"
                             )
                 if _本根哨兵价说明 is None and _哨兵价当前 is not None:
-                    if _前一根哨兵价 is None:
+                    if _前复权高 is not None and _前复权高 > float(_哨兵价当前):
+                        _哨兵价当前 = _前复权高
+                        _本根哨兵价说明 = (
+                            f"跟踪上移：{round(_前一根哨兵价 or (_哨兵价当前), 2)} → "
+                            f"{round(_哨兵价当前, 2)}"
+                        )
+                    elif _前一根哨兵价 is None:
                         _本根哨兵价说明 = "当前已有哨兵价"
                     elif float(_哨兵价当前) > float(_前一根哨兵价):
                         _本根哨兵价说明 = (
@@ -338,30 +367,56 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
                 _前复权收盘价 = d.get('前复权_收盘', None)
                 if _前复权收盘价 is not None and (isinstance(_前复权收盘价, float) and pd.isna(_前复权收盘价)):
                     _前复权收盘价 = None
-                # 按序号匹配当前K线的买卖
-                for _seq_no, _buy in list(_买入记录.items()):
-                    if _buy['时间'] == 完整时间_:
-                        _股数 = max(0, int(_buy['金额'] / _buy['价'] / 100) * 100)
-                        _当前持股 += _股数
-                        _当前现金 -= _股数 * _buy['价']
-                        break
-                for _seq_no, _sell in _卖出记录.items():
-                    if _sell['时间'] == 完整时间_:
-                        _当前现金 += _sell['金额']
-                        if _seq_no in _买入记录:
-                            _原股数 = max(0, int(_买入记录[_seq_no]['金额'] / _买入记录[_seq_no]['价'] / 100) * 100)
-                            _当前持股 = max(0, _当前持股 - _原股数)
-                        break
-                if _当前持股 > 0 and _前复权收盘价 and _前复权收盘价 > 0:
-                    _当前权益 = _当前现金 + _当前持股 * _前复权收盘价
+                if _组合实际回放:
+                    for _trade in _组合成交按K线.get(i, []):
+                        _数量 = max(0, int(float(_trade.get('成交数量', 0) or 0)))
+                        if str(_trade.get('类型', '')) == '买入':
+                            _买价 = float(_trade.get('买入价', 0) or 0)
+                            _总成本 = float(_trade.get('总成本', _买价 * _数量) or _买价 * _数量)
+                            _当前现金 -= _总成本
+                            _当前持股 += _数量
+                        elif str(_trade.get('类型', '')) == '卖出':
+                            _卖价 = float(_trade.get('卖出价', 0) or 0)
+                            _卖出净额 = float(_trade.get('卖出净金额', _卖价 * _数量) or _卖价 * _数量)
+                            _当前现金 += _卖出净额
+                            _当前持股 = max(0, _当前持股 - _数量)
+                else:
+                    # 旧单股结果按持仓组关联买卖。
+                    for _seq_no, _buy in list(_买入记录.items()):
+                        if _buy['时间'] == 完整时间_:
+                            _股数 = max(0, int(_buy['金额'] / _buy['价'] / 100) * 100)
+                            _当前持股 += _股数
+                            _当前现金 -= _股数 * _buy['价']
+                            break
+                    for _seq_no, _sell in _卖出记录.items():
+                        if _sell['时间'] == 完整时间_:
+                            _当前现金 += _sell['金额']
+                            if _seq_no in _买入记录:
+                                _原股数 = max(0, int(_买入记录[_seq_no]['金额'] / _买入记录[_seq_no]['价'] / 100) * 100)
+                                _当前持股 = max(0, _当前持股 - _原股数)
+                            break
+                _估值价格 = d.get('不复权_收盘') if _组合实际回放 else _前复权收盘价
+                if _当前持股 > 0 and _估值价格 and _估值价格 > 0:
+                    _当前权益 = _当前现金 + _当前持股 * _估值价格
                 else:
                     _当前权益 = _当前现金
                 d['权益'] = round(_当前权益, 2) if not (isinstance(_当前权益, float) and (pd.isna(_当前权益) or np.isnan(_当前权益))) else _当前现金
                 # 优先使用回测引擎实际记录的决策和账户状态。
                 _真实状态 = 真实K线状态查询.get(i, {})
                 for _字段 in ['买入信号', '过滤检查', '卖出检查', '决策记录', '最终动作', '动作原因', '成交拒绝原因', '当前现金', '持仓市值', '权益', '持仓数量', '哨兵价', '哨兵价状态', '哨兵价前值', '本根触发哨兵价', '哨兵价形成类型', '哨兵价本根新形成', '哨兵价已确认可执行', '本根反推价', '本根反推信号类型', '本根反推目标RSI', 'RSI反推价当前', '上一根突破基准价当前', '最终买入触发价当前', '哨兵价锁定信号类型']:
-                    if _字段 in _真实状态 and not pd.isna(_真实状态[_字段]):
-                        d[_字段] = _真实状态[_字段]
+                    if _字段 not in _真实状态:
+                        continue
+                    _值 = _真实状态[_字段]
+                    if _值 is None or (isinstance(_值, float) and pd.isna(_值)):
+                        d[_字段] = None
+                    else:
+                        d[_字段] = _值
+                for _字段 in ['哨兵价', '哨兵价前值', '本根触发哨兵价', '最终买入触发价当前']:
+                    try:
+                        if d.get(_字段) is not None and float(d[_字段]) <= 0:
+                            d[_字段] = None
+                    except (TypeError, ValueError):
+                        d[_字段] = None
                 # 若本根真实形成了新哨兵，状态说明必须使用引擎真实字段，
                 # 不再使用报告层重新反推得到的近似值。
                 if d.get('哨兵价本根新形成') and d.get('本根反推价') is not None:
@@ -394,6 +449,7 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
             'hs300': 回测结果.get('基准_HS300', []),
         }, ensure_ascii=False, default=str),
         '%%配置JSON%%': json.dumps(回测结果.get('配置快照', {}), ensure_ascii=False, default=str),
+        '%%回放口径%%': '组合实际成交' if 回测结果.get('运行参数', {}).get('组合实际回放') else '单股策略模拟',
         '%%耗时%%': f"{回测结果.get('耗时', 0):.1f}",
     }.items():
         html = html.replace(k, str(v))

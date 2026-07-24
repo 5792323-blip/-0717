@@ -8,7 +8,7 @@ import yaml
 from 运行程序.interactive_backtest_app import (
     应用表单到配置, 应用, 构建默认表单, 构建工作台表单,
     保存最近工作台配置, 获取当前单票回放地址, 获取多股票回放地址,
-    运行交互回测, 提取模式配置, 预检查无成交风险,
+    运行交互回测, 提取模式配置, 规范化表单, 预检查无成交风险,
 )
 
 
@@ -52,6 +52,7 @@ def test_apply_form_updates_snapshot(tmp_path):
         "single_switch_扩展因子_market_state": True,
         "single_switch_核心模块_same_bar_entry": True,
         "single_switch_核心模块_next_bar_entry": False,
+        "single_entry_timing": "same_bar_entry",
         "single_param_卖出规则_take_profit_第一目标": 0.06,
         "single_param_卖出规则_take_profit_第二目标": 0.12,
         "single_param_卖出规则_take_profit_第三目标": 0.24,
@@ -109,8 +110,10 @@ def test_home_page_renders():
     assert "多股模式" in body
     assert "运行单股回测" in body
     assert "运行多股回测" in body
-    assert "基础回测参数" in body
-    assert "资金、日期、仓位、指标" in body
+    assert "回测范围、资金与基础指标" in body
+    assert "资金 · 日期 · 仓位 · RSI · ATR" in body
+    assert "严格预挂单下，1.001 代表成交价上限上浮 0.1%" in body
+    assert "updateSingleEffectiveConfig" in body
     assert "RSI价格源" in body
     assert "收盘确认后次根开盘" in body
     assert "过滤因子" in body
@@ -137,11 +140,11 @@ def test_home_page_renders():
     assert "下一根K线执行" in body
     assert 'name="single_switch_扩展因子_xgboost_trend"' in body
     assert 'name="single_switch_扩展因子_xgboost_trend"' in body and "disabled" in body
-    assert re.search(r"买入规则</span><span class=\"fold-count\">4 项（\d+项）</span>", body)
-    assert re.search(r"卖出规则</span><span class=\"fold-count\">12 项（\d+项）</span>", body)
-    assert re.search(r"过滤因子</span><span class=\"fold-count\">13 项（\d+项）</span>", body)
-    assert re.search(r"扩展因子</span><span class=\"fold-count\">17 项（\d+项）</span>", body)
-    assert re.search(r"核心模块</span><span class=\"fold-count\">6 项（\d+项）</span>", body)
+    assert re.search(r"买入信号规则</span><span class=\"fold-count\">4 项（\d+项）</span>", body)
+    assert re.search(r"卖出与退出风控</span><span class=\"fold-count\">12 项（\d+项）</span>", body)
+    assert re.search(r"买入前过滤因子</span><span class=\"fold-count\">13 项（\d+项）</span>", body)
+    assert re.search(r"实验扩展因子</span><span class=\"fold-count\">17 项（\d+项）</span>", body)
+    assert re.search(r"成交执行与核心模块</span><span class=\"fold-count\">6 项（\d+项）</span>", body)
 
 
 def test_replay_uses_single_pan_zoom_workbench_template():
@@ -180,6 +183,7 @@ def test_single_full_position_mode_passes_runtime_flag(tmp_path):
 
     with patch("运行程序.interactive_backtest_app.创建运行目录", return_value=str(tmp_path)), \
          patch("运行程序.interactive_backtest_app.复制配置", return_value=str(tmp_path)), \
+         patch("运行程序.interactive_backtest_app.清理旧交互回测数据"), \
          patch("运行程序.interactive_backtest_app.应用表单到配置") as apply_config, \
          patch("运行程序.interactive_backtest_app.跑回测") as run_backtest, \
          patch("运行程序.interactive_backtest_app.保存结果"), \
@@ -222,3 +226,9 @@ def test_workbench_configuration_survives_reload(tmp_path):
         restored = 构建工作台表单()
     assert restored["single_switch_扩展因子_grid_addon"] is True
     assert restored["multi_switch_过滤因子_index_trend_filter"] is True
+
+
+def test_unchecked_strategy_switch_is_saved_as_disabled():
+    form = 规范化表单({"save_config": "1"})
+    assert form["single_switch_卖出规则_atr_trailing"] is False
+    assert form["multi_switch_卖出规则_atr_trailing"] is False

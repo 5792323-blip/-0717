@@ -50,3 +50,26 @@ def test_expired_candidate_is_not_executed(tmp_path):
                     cash_floor=0, max_daily_buy_ratio=1, stock_capital=10000,
                     candidate_expiry_bars=0)
     assert result["资金审计"].get("候选队列成交", 0) == 0
+
+
+def test_queued_stock_is_not_counted_as_duplicate_full_position_signal(tmp_path):
+    rows = [
+        {"类型": "买入", "时间": "2023-01-01", "买入价": 10, "卖出价": "", "成交数量": 100,
+         "信号类型": "RSI上穿20", "信号质量分": 1, "网格级别": 0},
+        {"类型": "买入", "时间": "2023-01-02", "买入价": 10, "卖出价": "", "成交数量": 100,
+         "信号类型": "RSI上穿30", "信号质量分": 1, "网格级别": 0},
+    ]
+    _stock(tmp_path, "000001", rows)
+    _stock(tmp_path, "000002", [{
+        "类型": "买入", "时间": "2023-01-01", "买入价": 20, "卖出价": "", "成交数量": 100,
+        "信号类型": "RSI上穿30", "信号质量分": 1, "网格级别": 0,
+    }])
+    result = replay(
+        [{"股票代码": code, "结果目录": str(tmp_path / code)} for code in ("000001", "000002")],
+        100000, max_positions=1, max_total_ratio=1, cash_floor=0,
+        max_daily_buy_ratio=1, stock_capital=10000,
+    )
+    audit = result["资金审计"]
+    assert audit.get("候选队列进入", 0) == 1
+    assert audit.get("候选队列等待", 0) == 1
+    assert audit.get("最大持仓拦截", 0) == 0

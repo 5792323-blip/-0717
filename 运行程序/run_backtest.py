@@ -11,6 +11,8 @@ import sys
 from concurrent.futures import ProcessPoolExecutor
 from datetime import date
 
+import pandas as pd
+
 项目根目录 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, 项目根目录)
 
@@ -61,13 +63,86 @@ def 单股摘要(result, requested_start, requested_end):
     }
 
 
+def _格式化K线时间(value):
+    try:
+        timestamp = pd.to_datetime(value, errors="coerce")
+    except (TypeError, ValueError):
+        return ""
+    if pd.isna(timestamp):
+        return ""
+    return timestamp.strftime("%Y-%m-%d %H:%M")
+
+
+def _补充交易K线定位(trades, holding, raw):
+    trades = trades.copy()
+    holding = holding.copy() if holding is not None else pd.DataFrame()
+    if raw is None or len(raw) == 0:
+        return trades, holding
+
+    kline_times = {}
+    for position, (index, row) in enumerate(raw.iterrows()):
+        value = row.get("完整时间", index)
+        timestamp = _格式化K线时间(value)
+        if not timestamp:
+            timestamp = _格式化K线时间(row.get("日期"))
+        kline_times[position] = timestamp
+
+    if "K线索引" in holding.columns:
+        holding["K线时间"] = holding["K线索引"].map(
+            lambda value: kline_times.get(int(value), "") if pd.notna(value) else ""
+        )
+
+    candidates = {}
+    if "K线索引" in holding.columns:
+        for _, row in holding.iterrows():
+            action = str(row.get("最终动作", ""))
+            kind = "买入" if "买入" in action or "加仓" in action else "卖出" if "卖出" in action else ""
+            if not kind:
+                continue
+            index = int(row["K线索引"])
+            day = str(row.get("日期", ""))[:10]
+            candidates.setdefault((day, kind), []).append({
+                "K线索引": index,
+                "K线时间": kline_times.get(index, ""),
+                "序号": str(row.get("买入序号", "")),
+                "持仓组ID": str(row.get("持仓组ID", "")),
+            })
+
+    used = set()
+    located_indexes = []
+    located_times = []
+    for _, trade in trades.iterrows():
+        day = str(trade.get("时间", ""))[:10]
+        kind = str(trade.get("类型", ""))
+        sequence = str(trade.get("序号", ""))
+        group = str(trade.get("持仓组ID", ""))
+        choices = candidates.get((day, kind), [])
+        match = next((item for item in choices if item["K线索引"] not in used and sequence and item["序号"] == sequence), None)
+        if match is None:
+            match = next((item for item in choices if item["K线索引"] not in used and group and item["持仓组ID"] == group), None)
+        if match is None:
+            match = next((item for item in choices if item["K线索引"] not in used), None)
+        if match is None:
+            located_indexes.append(None)
+            located_times.append(_格式化K线时间(trade.get("时间")))
+            continue
+        used.add(match["K线索引"])
+        located_indexes.append(match["K线索引"])
+        located_times.append(match["K线时间"])
+    trades["K线索引"] = located_indexes
+    trades["K线时间"] = located_times
+    return trades, holding
+
+
 def _保存多股单票结果(result, stock_dir):
     """保存多股本次运行的单票完整证据，不改变单股保存流程。"""
     os.makedirs(stock_dir, exist_ok=True)
     trades = result.get("交易明细")
     holding = result.get("持仓过程")
     if trades is not None and len(trades) > 0:
+        trades, holding = _补充交易K线定位(trades, holding, result.get("原始K线数据"))
         trades.to_csv(os.path.join(stock_dir, "交易明细.csv"), index=False, encoding="utf-8-sig")
+        trades.to_csv(os.path.join(stock_dir, "候选交易明细.csv"), index=False, encoding="utf-8-sig")
     if holding is not None and len(holding) > 0:
         holding.to_csv(os.path.join(stock_dir, "持仓过程.csv"), index=False, encoding="utf-8-sig")
     with open(os.path.join(stock_dir, "回测摘要.txt"), "w", encoding="utf-8") as target:
@@ -78,22 +153,7 @@ def _保存多股单票结果(result, stock_dir):
         target.write(f"最大回撤: {result.get('最大回撤', 0):.2f}%\n")
         target.write(f"胜率: {result.get('胜率', 0):.2f}%\n")
         target.write(f"交易次数: {result.get('买入次数', 0)}买 / {result.get('卖出次数', 0)}卖\n")
-    report_path = os.path.join(stock_dir, "策略决策回放.html")
-    # 无成交股票不需要嵌入数万根K线，使用轻量诊断页避免多股回测产生数GB重复HTML。
-    if trades is None or len(trades) == 0:
-        with open(report_path, "w", encoding="utf-8") as target:
-            target.write(
-                "<!doctype html><meta charset='utf-8'><title>策略决策回放 - "
-                f"{result.get('股票代码', '')}</title><style>body{{background:#101620;color:#d1d4dc;font-family:-apple-system,Microsoft YaHei,sans-serif;padding:28px}}h1{{color:#e94560}}.box{{background:#18202d;border:1px solid #334055;border-radius:8px;padding:18px;max-width:720px}}b{{color:#fff}}</style>"
-                f"<h1>{result.get('股票代码', '')} 策略决策回放</h1><div class='box'>"
-                f"<p>本次没有产生成交。</p><p>买入次数：<b>{result.get('买入次数', 0)}</b>　卖出次数：<b>{result.get('卖出次数', 0)}</b></p>"
-                f"<p>初始资金：<b>{float(result.get('初始资金', 0)):,.2f}</b>　最终权益：<b>{float(result.get('最终权益', 0)):,.2f}</b></p>"
-                "<p>详细原因请回到回测主页面的成交诊断，或使用有成交股票的完整K线回放。</p></div>"
-            )
-    else:
-        from 回测引擎.report_generator import 生成报告
-        生成报告(result, result.get("原始K线数据"), 输出路径=report_path)
-    return report_path
+    return os.path.join(stock_dir, "策略决策回放.html")
 
 
 def 执行单股任务(task):

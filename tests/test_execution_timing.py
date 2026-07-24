@@ -69,20 +69,22 @@ def test_reverse_price_window_excludes_current_close():
     with patch("买入执行模块.rsi_reverse_price.反推RSI价位", side_effect=fake_reverse):
         executor._计算哨兵价(current, 16)
 
-    assert captured["window"] == list(range(1, 16))
+    assert captured["window"] == list(range(2, 17))
     assert 999.0 not in captured["window"]
     assert executor.哨兵价当前 == 110.0
 
 
 def test_no_sentinel_when_rsi_still_below_threshold():
     executor = make_executor()
-    current = make_bar(RSI_14=18.8, _上一根RSI=15.7, 前复权_最高=1186.97)
+    current = make_bar(RSI_14=18.8, _上一根RSI=15.7, 前复权_最高=1186.97,
+                       前复权_收盘=1000.0)
     with patch("买入执行模块.rsi_reverse_price.反推RSI价位", return_value={"目标价位": 1190.80}) as reverse:
         executor._计算哨兵价(current, 16)
-    reverse.assert_not_called()
-    assert executor.哨兵价当前 is None
-    assert executor.哨兵价形成类型 is None
-    assert executor.哨兵价已形成 is False
+    reverse.assert_called_once()
+    assert reverse.call_args.kwargs["目标RSI"] == 20
+    assert executor.哨兵价当前 == 1190.80
+    assert executor.哨兵价形成类型 == "RSI上穿20"
+    assert executor.哨兵价已形成 is True
 
 
 def test_real_rsi_30_cross_replaces_pending_ma_sentinel():
@@ -123,6 +125,19 @@ def test_existing_sentinel_does_not_move_downward_in_tracking():
     assert executor.上一根突破基准价当前 == 10.0
 
 
+def test_precomputed_sentinel_moves_up_when_high_breaks_without_reverse_price():
+    executor = make_executor()
+    executor.买入时机模式 = "precomputed_stop_entry"
+    executor.哨兵价当前 = 20.0
+    executor.哨兵价已形成 = True
+    executor.RSI反推价当前 = None
+
+    executor._更新哨兵价跟踪(make_bar(前复权_最高=25.0))
+
+    assert executor.哨兵价当前 == 25.0
+    assert executor.上一根突破基准价当前 == 25.0
+
+
 def test_new_cross_can_create_lower_sentinel_than_previous_one():
     executor = make_executor()
     executor.哨兵价当前 = 20.0
@@ -130,6 +145,7 @@ def test_new_cross_can_create_lower_sentinel_than_previous_one():
     executor.哨兵价形成类型 = "RSI上穿20"
     executor.上一根突破基准价当前 = 20.0
     executor.上一根_RSI_MA = 35.0
+    executor.上一根_最高价 = 17.0
     executor.价格序列 = list(range(1, 17))
 
     current = make_bar(RSI_14=31.0, _上一根RSI=29.0, 前复权_最高=17.0)
@@ -324,3 +340,23 @@ def test_sell_rule_uses_previous_completed_close():
     executor._检查卖出(executor.当前持仓["600519"], make_bar(不复权_收盘=999.0), 2, "600519")
     reason = executor.本根决策["卖出检查"][0]["原因"]
     assert "0.0" not in reason
+
+
+def test_new_strict_sentinel_is_checked_on_the_forming_bar():
+    executor = 规则执行器("1_策略配置")
+    checks = []
+
+    executor._预计算本根哨兵价 = lambda: None
+
+    def form_sentinel(_bar, _index):
+        executor.哨兵价本根新形成 = True
+        executor.哨兵价已形成 = True
+        executor.哨兵价当前 = 105.0
+        executor.哨兵价形成类型 = "RSI上穿20"
+
+    executor._计算哨兵价 = form_sentinel
+    executor._检查买入 = lambda _bar, _index: checks.append(True)
+
+    executor.每根K线处理(make_bar(), 20)
+
+    assert len(checks) == 2

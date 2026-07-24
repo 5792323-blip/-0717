@@ -24,7 +24,7 @@ def 形成候选(RSI反推价, 上一根最高价):
 
 def 评估触发(RSI反推价, 上一根最高价, K线数据, 不复权最小报价=0.01):
     """
-    必须满足：本根最高价严格高于哨兵价。
+    必须满足：本根最高价达到哨兵价。
     哨兵价 = max(RSI反推价, 上一根最高价)。不再额外叠加一个最小报价单位，
     买入溢价只在后续成交价格计算中使用。
     不读取本根收盘价、本根 RSI 或本根 RSI 均线。
@@ -40,13 +40,12 @@ def 评估触发(RSI反推价, 上一根最高价, K线数据, 不复权最小�
         return {"满足": False, "原因": "严格触发价格缺失"}
     if min(reverse, previous_high, current_high) <= 0:
         return {"满足": False, "原因": "严格触发价格无效"}
-    # 触发边界就是理论哨兵价；当前最高价只需严格超过该边界。
-    # 报价步长仍保留在返回信息中，供审计使用，但不再抬高触发条件。
-    reverse_trigger = reverse
+    # 哨兵价是条件单触发边界，触达即可触发；不再额外抬高一个报价单位。
+    reverse_trigger = _向上取整(reverse, tick) if tick else reverse
     high_trigger = previous_high
     final_trigger = max(reverse_trigger, high_trigger)
-    reverse_ok = current_high > reverse
-    high_ok = current_high > previous_high
+    reverse_ok = current_high >= reverse_trigger
+    high_ok = current_high >= high_trigger
     limiting = "RSI反推价" if reverse >= previous_high else "上一根高点突破"
     return {
         "满足": bool(reverse_ok and high_ok),
@@ -61,6 +60,6 @@ def 评估触发(RSI反推价, 上一根最高价, K线数据, 不复权最小�
         "限制条件": limiting,
         "价格步长": tick,
         "原因": "两项价格条件均通过" if reverse_ok and high_ok else (
-            "本根未达到RSI反推价" if not reverse_ok else "本根未严格突破上一根最高价"
+            "本根未达到RSI反推价" if not reverse_ok else "本根未达到上一根最高价"
         ),
     }

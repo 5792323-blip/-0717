@@ -70,7 +70,7 @@ from 组合回测.共享资金池网格 import replay as 重放共享资金池�
         ("entry_timing", "K线动量入场"), ("signal_scorer", "信号质量评分"),
         ("momentum_exit", "动能退出因子"), ("take_profit", "止盈因子"),
         ("position_sizing", "动态仓位"), ("total_control", "总仓位控制"),
-        ("grid_addon", "网格加仓（逐级加倍）"),
+        ("grid_addon", "网格加仓（实验：固定/线性/倍数）"),
         ("xgboost_trend", "XGBoost趋势"), ("randomforest_market", "RandomForest大盘"),
         ("committee_vote", "委员会投票"), ("ml_entry_timing", "ML入场时机"),
         ("ml_fake_drop", "ML假跌判断"), ("volatility_classifier", "波动率分类器"),
@@ -661,6 +661,26 @@ from 组合回测.共享资金池网格 import replay as 重放共享资金池�
             </select>
           </div>
           <div>
+            <label>网格加仓模式（实验）</label>
+            <select name="single_grid_mode">
+              <option value="fixed_tranche" {% if form.single_grid_mode == 'fixed_tranche' %}selected{% endif %}>固定分层（实验）</option>
+              <option value="linear" {% if form.single_grid_mode == 'linear' %}selected{% endif %}>线性递增（实验）</option>
+              <option value="multiplier" {% if form.single_grid_mode == 'multiplier' %}selected{% endif %}>倍数加仓（实验）</option>
+            </select>
+          </div>
+          <div>
+            <label>首次开仓占网格预算比例</label>
+            <input type="number" step="0.01" min="0.01" max="1" name="single_grid_initial_ratio" value="{{ form.single_grid_initial_ratio }}">
+          </div>
+          <div>
+            <label>固定分层每层比例</label>
+            <input type="number" step="0.01" min="0.01" max="1" name="single_grid_followup_ratio" value="{{ form.single_grid_followup_ratio }}">
+          </div>
+          <div>
+            <label>倍数加仓倍数</label>
+            <input type="number" step="0.1" min="1" name="single_grid_multiplier" value="{{ form.single_grid_multiplier }}">
+          </div>
+          <div>
             <label>RSI均线周期</label>
             <input type="number" step="1" name="single_rsi_ma_period" value="{{ form.single_rsi_ma_period }}">
           </div>
@@ -671,6 +691,7 @@ from 组合回测.共享资金池网格 import replay as 重放共享资金池�
           <div>
             <label>买入溢价</label>
             <input type="number" step="0.0001" name="single_buy_premium" value="{{ form.single_buy_premium }}">
+            <p class="compact-note">严格预挂单下，1.001 代表成交价上限上浮 0.1%；若计划价超过当根最高价，系统按当根最高价成交，不会因溢价造成假拦截。</p>
           </div>
           <div>
             <label>滑点</label>
@@ -771,6 +792,26 @@ from 组合回测.共享资金池网格 import replay as 重放共享资金池�
               <option value="shared_grid" {% if form.multi_portfolio_mode == 'shared_grid' %}selected{% endif %}>新逻辑：共享资金池网格</option>
             </select>
             <p class="compact-note">共享资金池网格会统一管理组合现金；等额独立资金池仅用于和旧结果对比。切换模式后，下面的仓位参数含义也会随之改变。</p>
+          </div>
+          <div>
+            <label>网格加仓模式（实验）</label>
+            <select name="multi_grid_mode">
+              <option value="fixed_tranche" {% if form.multi_grid_mode == 'fixed_tranche' %}selected{% endif %}>固定分层（实验）</option>
+              <option value="linear" {% if form.multi_grid_mode == 'linear' %}selected{% endif %}>线性递增（实验）</option>
+              <option value="multiplier" {% if form.multi_grid_mode == 'multiplier' %}selected{% endif %}>倍数加仓（实验）</option>
+            </select>
+          </div>
+          <div>
+            <label>首次开仓占网格预算比例</label>
+            <input type="number" step="0.01" min="0.01" max="1" name="multi_grid_initial_ratio" value="{{ form.multi_grid_initial_ratio }}">
+          </div>
+          <div>
+            <label>固定分层每层比例</label>
+            <input type="number" step="0.01" min="0.01" max="1" name="multi_grid_followup_ratio" value="{{ form.multi_grid_followup_ratio }}">
+          </div>
+          <div>
+            <label>倍数加仓倍数</label>
+            <input type="number" step="0.1" min="1" name="multi_grid_multiplier" value="{{ form.multi_grid_multiplier }}">
           </div>
           <div>
             <label>并行进程数</label>
@@ -1102,12 +1143,62 @@ from 组合回测.共享资金池网格 import replay as 重放共享资金池�
     const effectiveConfig = document.getElementById('effectiveConfig');
     function field(name) { return document.querySelector(`[name="${name}"]`); }
     function setField(name, value) { const node = field(name); if (node) node.value = value; }
+    function valueOf(name, fallback = '') { const node = field(name); return node ? node.value : fallback; }
+    function checked(name) { const node = field(name); return Boolean(node && node.checked); }
+    function updateSingleEffectiveConfig() {
+      const timing = {
+        precomputed_stop_entry: '严格预挂单',
+        close_confirm_next_open: '收盘确认后次根开盘',
+        tb_replay: 'TB复刻',
+        same_bar_entry: '本根形成后立即买入',
+      }[valueOf('single_entry_timing')] || valueOf('single_entry_timing');
+      const grid = checked('single_switch_扩展因子_grid_addon')
+        ? `网格加仓 ${valueOf('single_grid_mode')} · 首笔${valueOf('single_grid_initial_ratio')} · 倍数${valueOf('single_grid_multiplier')}`
+        : '网格加仓关闭';
+      effectiveConfig.innerHTML = `<b>单股当前生效设置：</b>资金 ${valueOf('single_capital')} · 基础仓位 ${valueOf('single_base_position')} · ${timing} · 买入溢价 ${valueOf('single_buy_premium')} · ${grid}`;
+    }
+    function updateGridFields(prefix) {
+      const modeNode = field(`${prefix}_grid_mode`);
+      if (!modeNode) return;
+      const mode = modeNode.value;
+      const fixed = field(`${prefix}_grid_followup_ratio`);
+      const multiplier = field(`${prefix}_grid_multiplier`);
+      if (fixed) fixed.closest('div').hidden = mode !== 'fixed_tranche';
+      if (multiplier) multiplier.closest('div').hidden = mode !== 'multiplier';
+      const initial = field(`${prefix}_grid_initial_ratio`);
+      if (initial) {
+        const holder = initial.closest('div');
+        let note = holder.querySelector('.grid-formula-note');
+        if (!note) {
+          note = document.createElement('p');
+          note.className = 'compact-note grid-formula-note';
+          holder.appendChild(note);
+        }
+        note.textContent = mode === 'multiplier'
+          ? '先按此比例换算首笔股数，之后按首笔股数的1、2、4、8倍加仓。'
+          : mode === 'linear'
+            ? '先按此比例换算首笔股数，之后按首笔股数的1、2、3、4倍加仓。'
+            : '先按此比例换算首笔股数，之后每层使用相同股数。';
+      }
+    }
+    ['single', 'multi'].forEach(prefix => {
+      const node = field(`${prefix}_grid_mode`);
+      if (node) {
+        node.addEventListener('change', () => updateGridFields(prefix));
+        updateGridFields(prefix);
+      }
+    });
     function showMode(mode) {
       uiMode.value = mode;
       modeTabs.forEach(tab => tab.classList.toggle('active', tab.dataset.modeTab === mode));
       modeSections.forEach(section => section.classList.toggle('mode-hidden', section.dataset.modeSection !== mode));
+      if (mode === 'single') updateSingleEffectiveConfig();
     }
     modeTabs.forEach(tab => tab.addEventListener('click', () => showMode(tab.dataset.modeTab)));
+    document.querySelectorAll('[name^="single_"]').forEach(node => {
+      node.addEventListener('input', updateSingleEffectiveConfig);
+      node.addEventListener('change', updateSingleEffectiveConfig);
+    });
     function applyPreset(name) {
       if (name === 'standard_grid') {
         showMode('multi');
@@ -1189,7 +1280,7 @@ def 读取工作台配置时间():
 def 保存最近工作台配置(form):
     """保存页面最后一次提交的表单，供刷新和服务重启后恢复。"""
     if not isinstance(form, dict):
-        return
+        return False
     os.makedirs(实验记录目录, exist_ok=True)
     payload = {
         "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1200,12 +1291,14 @@ def 保存最近工作台配置(form):
         with open(temporary_path, "w", encoding="utf-8") as target:
             json.dump(payload, target, ensure_ascii=False, indent=2, default=str)
         os.replace(temporary_path, 工作台配置路径)
+        return True
     except OSError:
         try:
             if os.path.exists(temporary_path):
                 os.remove(temporary_path)
         except OSError:
             pass
+        return False
 
 
 def 保存最近回测配置(form, mode="single"):
@@ -1386,6 +1479,10 @@ def 构建默认表单():
         "time_exit_bars": params["卖出参数"]["时间退出K线数"],
         "time_exit_loss": params["卖出参数"]["时间退出亏损线"],
         "core_version": core_config.get("版本", "core-v1"),
+        "grid_mode": "multiplier",
+        "grid_initial_ratio": 0.25,
+        "grid_followup_ratio": 0.25,
+        "grid_multiplier": 2.0,
     }
     for category, items in 模块显示顺序.items():
         for module_id, _label in items:
@@ -1514,6 +1611,7 @@ def 规范化表单(form_data):
         "single_rsi_price_source", "multi_rsi_price_source",
         "single_entry_timing", "multi_entry_timing",
         "multi_portfolio_mode",
+        "single_grid_mode", "multi_grid_mode",
     ]
     for key in text_keys:
         normalized[key] = str(form_data.get(key, defaults[key])).strip() or defaults[key]
@@ -1525,8 +1623,10 @@ def 规范化表单(form_data):
             "tb_replay", "same_bar_entry", "legacy_same_bar_lookahead", "intrabar_breakout",
         ):
             normalized[f"{prefix}_entry_timing"] = defaults[f"{prefix}_entry_timing"]
+        if normalized[f"{prefix}_grid_mode"] not in ("fixed_tranche", "linear", "multiplier"):
+            normalized[f"{prefix}_grid_mode"] = defaults[f"{prefix}_grid_mode"]
         if normalized[f"{prefix}_entry_timing"] == "precomputed_stop_entry":
-            normalized[f"{prefix}_switch_核心模块_same_bar_entry"] = False
+            normalized[f"{prefix}_switch_核心模块_same_bar_entry"] = True
             normalized[f"{prefix}_switch_核心模块_next_bar_entry"] = True
         elif normalized[f"{prefix}_entry_timing"] == "same_bar_entry":
             normalized[f"{prefix}_switch_核心模块_same_bar_entry"] = True
@@ -1551,14 +1651,17 @@ def 规范化表单(form_data):
         "multi_take_profit_1": float, "multi_take_profit_2": float, "multi_take_profit_3": float,
         "multi_guard_atr_buffer": float, "multi_momentum_decline": float,
         "multi_time_exit_bars": int, "multi_time_exit_loss": float,
+        "single_grid_initial_ratio": float, "single_grid_followup_ratio": float,
+        "single_grid_multiplier": float, "multi_grid_initial_ratio": float,
+        "multi_grid_followup_ratio": float, "multi_grid_multiplier": float,
     }
     for key, caster in numeric_fields.items():
         normalized[key] = 安全读取表单值(form_data, key, caster, defaults[key])
     for key in defaults:
         if "_switch_" in key:
             normalized[key] = (
-                (form_data.get(key) == "on" or form_data.get(key) is True)
-                if key in form_data else bool(defaults[key])
+                form_data.get(key) == "on" or form_data.get(key) is True
+                if key in form_data else False
             )
         if "_param_" in key:
             normalized[key] = 解析参数值(form_data.get(key), defaults[key])
@@ -1666,6 +1769,12 @@ def 应用表单到配置(config_dir, form):
 
     positions["基准仓位"]["初始资金"] = form["capital"]
     positions["基准仓位"]["基础单只金额"] = form["base_position"]
+    if (form.get("full_position_mode")
+            and form.get("switch_扩展因子_grid_addon")
+            and form.get("grid_initial_ratio") is not None):
+        positions["基准仓位"]["基础单只金额"] = (
+            float(form["base_position"]) * float(form["grid_initial_ratio"])
+        )
     positions["基准仓位"]["最大总持仓数"] = form["max_positions"]
     positions["基准仓位"]["最大单只比例"] = form["max_single_ratio"]
     positions["基准仓位"]["最大总仓位比例"] = form["max_total_ratio"]
@@ -1732,6 +1841,16 @@ def 应用表单到配置(config_dir, form):
         if legacy_id in factors["因子列表"]:
             factors["因子列表"][legacy_id]["参数"] = params
 
+    # 网格模式是页面级资金语义，覆盖因子文件中的同名默认值，保证
+    # 单股引擎与共享组合层使用同一套选择。
+    grid_config = factors["因子列表"].get("grid_addon")
+    if isinstance(grid_config, dict):
+        grid_params = grid_config.setdefault("参数", {})
+        grid_params.update({
+            "加仓模式": form.get("grid_mode", "multiplier"),
+            "倍数": float(form.get("grid_multiplier", 2.0) or 2.0),
+        })
+
     for item in exits["卖出条件列表"]:
         if item["英文标识"] == "time_exit":
             parameters["卖出参数"]["时间退出K线数"] = item.get("最大持仓K线数", parameters["卖出参数"]["时间退出K线数"])
@@ -1776,9 +1895,9 @@ def 应用表单到配置(config_dir, form):
         core["核心模块"]["哨兵价形成"]["启用"] = True
         core["核心模块"]["哨兵价突破成交"]["启用"] = True
         core["核心模块"]["哨兵价突破后上移"]["启用"] = True
-        switches["模块类别"]["核心模块"].setdefault("same_bar_entry", {"名称": "本根形成哨兵价后立即买入", "状态": "完成"})["启用"] = False
-        core["核心模块"]["本根形成立即成交"]["启用"] = False
-        parameters["技术指标参数"]["哨兵价本根形成立即买入"] = False
+        switches["模块类别"]["核心模块"].setdefault("same_bar_entry", {"名称": "本根形成哨兵价后立即买入", "状态": "完成"})["启用"] = True
+        core["核心模块"]["本根形成立即成交"]["启用"] = True
+        parameters["技术指标参数"]["哨兵价本根形成立即买入"] = True
         switches["模块类别"]["核心模块"].setdefault("next_bar_entry", {"名称": "下一根执行", "状态": "完成"})["启用"] = True
         core["核心模块"]["下一根执行"]["启用"] = True
     elif form.get("entry_timing") == "same_bar_entry":
@@ -1840,6 +1959,13 @@ def 提取模式配置(form, prefix):
         "momentum_decline": form[f"{prefix}_momentum_decline"],
         "time_exit_bars": form[f"{prefix}_time_exit_bars"],
         "time_exit_loss": form[f"{prefix}_time_exit_loss"],
+        "grid_mode": form[f"{prefix}_grid_mode"],
+        "grid_initial_ratio": form[f"{prefix}_grid_initial_ratio"],
+        "grid_followup_ratio": form[f"{prefix}_grid_followup_ratio"],
+        "grid_multiplier": form[f"{prefix}_grid_multiplier"],
+        "grid_max_add_count": int(form.get(
+            f"{prefix}_param_扩展因子_grid_addon_最大加仓次数", 5
+        ) or 5),
     }
     for category, items in 模块显示顺序.items():
         for module_id, _label in items:
@@ -1957,8 +2083,6 @@ def 预检查无成交风险(form, mode):
     if str(form.get(f"{prefix}_entry_timing")) == "precomputed_stop_entry":
         if not form.get(f"{prefix}_switch_核心模块_next_bar_entry"):
             issues.append("严格预挂单模式必须启用“下一根执行”，否则不会执行任何买入检查。")
-        if form.get(f"{prefix}_switch_核心模块_same_bar_entry"):
-            issues.append("严格预挂单模式不能同时启用“本根形成即成交”，请关闭旧版本根成交。")
     if str(form.get(f"{prefix}_entry_timing")) == "same_bar_entry":
         if form.get(f"{prefix}_switch_核心模块_next_bar_entry"):
             issues.append("本根形成哨兵价后立即买入模式不能同时启用“下一根执行”。")
@@ -2011,13 +2135,13 @@ def 构建成交诊断(result, form=None, prefix="single"):
         if "卖出" in action:
             sell_count += 1
         if "尚未突破" in reason:
-            add_reason("价格未突破哨兵价", "本根最高价没有严格超过上一根已确认的哨兵价")
+            add_reason("价格未达到哨兵价", "本根最高价没有达到上一根已确认的哨兵价")
         elif "未启用" in reason:
             add_reason("买入规则未启用", "形成的哨兵价对应规则当前没有打开")
         elif "过滤" in reason and ("拦截" in reason or "未通过" in reason):
             add_reason("过滤因子拦截", reason)
         elif "溢价" in reason and ("高于" in reason or "超过" in reason):
-            add_reason("买入溢价超过当根最高价", "严格OHLC成交模型拒绝不可实现的成交价")
+            add_reason("买入价格超出当根范围", "成交模型拒绝了低于当根最低价的计划成交价")
         elif "现金" in reason or "可用金额" in reason:
             add_reason("现金/仓位不足", reason)
         elif "一手" in reason or "数量不足" in reason:
@@ -2032,12 +2156,8 @@ def 构建成交诊断(result, form=None, prefix="single"):
                 upper_value = None
             if upper_value is not None:
                 observed_limits.add(upper_value)
-            # 旧版记录没有把“可买数量不足一手”写入拒绝原因，但会留下单笔上限。
-            # 对茅台等高价股，2万元上限本身就足以判定无法买入100股。
-            if upper_value is not None and upper_value < 50000:
-                add_reason("单笔上限不足一手", f"单笔买入上限 {upper_value:,.0f} 元，低于当前股票一手金额")
-            elif "溢价" in rejection:
-                add_reason("买入溢价超过当根最高价", rejection)
+            if "溢价" in rejection:
+                add_reason("买入价格超出当根范围", rejection)
             elif "一手" in rejection or "数量" in rejection or "上限" in rejection:
                 add_reason("单笔上限不足一手", rejection or "买入金额上限无法买入100股")
             elif "现金" in rejection or "仓位" in rejection:
@@ -2058,18 +2178,10 @@ def 构建成交诊断(result, form=None, prefix="single"):
             if grid.get("成交") or "加仓成交" in text:
                 grid_buy += 1
 
-    # 某些旧回测把拒绝细节仅写在决策记录中，二次扫描可补齐一手/溢价统计。
-    for row in records:
-        decision = parse(row.get("决策记录"), {}) if isinstance(row, dict) else {}
-        buy = decision.get("买入", {}) if isinstance(decision, dict) else {}
-        text = json.dumps(buy, ensure_ascii=False)
-        if "单笔买入上限" in text and ("20000" in text or "不足一手" in text):
-            counts["单笔上限不足一手"] = max(counts["单笔上限不足一手"], 1)
-
     ordered = [
-        ("价格未突破哨兵价", "等待下一根K线继续突破"),
-        ("单笔上限不足一手", "买入上限必须至少覆盖当前股价×100股（含费用）"),
-        ("买入溢价超过当根最高价", "降低买入溢价或改用允许回压成交的模式"),
+        ("价格未达到哨兵价", "等待下一根K线达到哨兵价"),
+        ("单笔上限不足一手", "仅在成交拒绝明确指出一手数量不足时显示；配置上限较小不等于必然拒绝"),
+        ("买入价格超出当根范围", "检查K线数据和成交价格设置"),
         ("现金/仓位不足", "检查现金底线、最大单只比例和总仓位"),
         ("过滤因子拦截", "关闭过滤因子或查看具体过滤证据"),
         ("买入规则未启用", "打开对应RSI上穿规则"),
@@ -2081,9 +2193,9 @@ def 构建成交诊断(result, form=None, prefix="single"):
         for label, note in ordered if counts.get(label, 0)
     ]
     warnings = []
-    if observed_limits and min(observed_limits) < 50000:
+    if observed_limits and counts.get("单笔上限不足一手", 0):
         limits_text = "、".join(f"{v:,.0f}" for v in sorted(observed_limits))
-        warnings.append(f"本次实际提交的买入信号配置记录了单笔买入上限 {limits_text} 元；当前回测中它低于一手金额，导致突破后仍无法成交。请在买入规则参数中统一提高到至少当前股价×100股。")
+        warnings.append(f"本次有成交拒绝明确指出一手数量不足；相关单笔买入上限为 {limits_text} 元。请结合触发K线价格确认是否需要提高上限。")
     # 直接提示当前常见配置冲突：每个启用买入规则的单笔上限低于一手金额。
     if isinstance(form, dict):
         base = float(form.get(f"{prefix}_base_position", 0) or 0)
@@ -2102,7 +2214,7 @@ def 构建成交诊断(result, form=None, prefix="single"):
             warnings.append(f"启用买入规则中最低单笔买入上限为 {low:,.0f} 元；若当前股票100股金额高于该值，会全部被拒绝。建议不低于基础单只金额或当前股价×100股。")
         if base and base < 10000:
             warnings.append(f"基础单只金额为 {base:,.0f} 元，低于A股最低一手约束。")
-    priority = ["单笔上限不足一手", "买入溢价超过当根最高价", "现金/仓位不足", "过滤因子拦截", "价格已突破但执行未成交", "价格未突破哨兵价", "买入规则未启用", "没有形成买入信号"]
+    priority = ["单笔上限不足一手", "买入价格超出当根范围", "现金/仓位不足", "过滤因子拦截", "价格已突破但执行未成交", "价格未达到哨兵价", "买入规则未启用", "没有形成买入信号"]
     headline = next((label for label in priority if counts.get(label, 0)), "没有形成买入信号" if signal_count == 0 else "未发现明确拦截原因")
     return {
         "headline": headline,
@@ -2300,11 +2412,14 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
     rows = []
     config_lines = []
     first_stock_url = ""
+    fallback_stock_url = ""
     for category, items in 模块显示顺序.items():
         selected = [label for module_id, label in items if form.get(f"switch_{category}_{module_id}")]
         config_lines.append(f"<div><b>多股·{category}</b>（{len(selected)}项）：{'、'.join(selected) if selected else '未选择'}</div>")
     config_lines.insert(0, f"<div><b>资金模式</b>：{summary.get('资金模式', '等额独立资金池')}</div>")
+    config_lines.insert(1, f"<div><b>网格加仓模式</b>：{ {'fixed_tranche': '固定分层（实验）', 'linear': '线性递增（实验）', 'multiplier': '倍数加仓（实验）'}.get(summary.get('网格加仓模式', form.get('grid_mode', 'multiplier')), '未识别') }</div>")
     audit_by_stock = {}
+    legacy_stock_summary = {}
     if summary.get("资金审计"):
         audit = summary["资金审计"]
         config_lines.append(
@@ -2316,112 +2431,310 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
         for row in summary.get("组合成交明细", []):
             stock = str(row.get("股票代码", ""))
             item = audit_by_stock.setdefault(stock, {"成交": 0, "拦截": 0, "使用资金": 0.0})
+            legacy = legacy_stock_summary.setdefault(stock, {
+                "实际买入": 0, "实际卖出": 0, "组合拦截": 0,
+                "期末股数": 0, "买入净额": 0.0, "卖出净额": 0.0, "最后价格": 0.0,
+            })
+            price = float(row.get("成交价", 0) or 0)
+            if price > 0:
+                legacy["最后价格"] = price
             if row.get("结果") == "实际成交":
                 item["成交"] += 1
+                quantity = int(float(row.get("成交股数", 0) or 0))
+                net = float(row.get("成交净额", price * quantity) or price * quantity)
                 if row.get("类型") == "买入":
-                    item["使用资金"] += float(row.get("成交股数", 0) or 0) * float(row.get("成交价", 0) or 0)
+                    item["使用资金"] += price * quantity
+                    legacy["实际买入"] += 1
+                    legacy["期末股数"] += quantity
+                    legacy["买入净额"] += net
+                elif row.get("类型") == "卖出":
+                    legacy["实际卖出"] += 1
+                    legacy["期末股数"] = max(0, legacy["期末股数"] - quantity)
+                    legacy["卖出净额"] += net
             else:
                 item["拦截"] += 1
+                legacy["组合拦截"] += 1
+    stock_capital = float(form.get("base_position", 0) or 0)
+    for legacy in legacy_stock_summary.values():
+        contribution = (
+            legacy.pop("卖出净额") - legacy.pop("买入净额")
+            + legacy["期末股数"] * legacy.pop("最后价格")
+        )
+        legacy["收益贡献"] = contribution
+        legacy["收益贡献率"] = contribution / stock_capital if stock_capital else 0.0
     for item in details:
         stock = str(item.get("股票代码", ""))
         if "错误" in item:
             rows.append(f"<tr><td>{stock}</td><td colspan='4'>失败：{item['错误']}</td></tr>")
             continue
         url = f"/multi/{token}/stock/{stock}"
-        if not first_stock_url:
-            first_stock_url = url
+        if not fallback_stock_url:
+            fallback_stock_url = url
         return_pct = float(item.get('总收益率', 0)) * 100
         audit_stock = audit_by_stock.get(stock, {})
-        rows.append(
-            f"<tr data-stock='{stock}' data-return='{return_pct}' data-drawdown='{float(item.get('最大回撤', 0))*100}'>"
-            f"<td><a href='{url}' target='stock_view' title='点击在右侧加载策略决策回放'>{stock}</a></td>"
-            f"<td class='{'positive' if return_pct >= 0 else 'negative'}'>{return_pct:+.2f}%</td>"
-            f"<td>{float(item.get('最大回撤', 0))*100:.2f}%</td>"
-            f"<td>{int(item.get('买入次数', 0))}/{int(item.get('卖出次数', 0))}</td>"
-            f"<td>{float(item.get('最终权益', 0)):,.0f}</td>"
-            f"{('<td>'+str(audit_stock.get('成交', 0))+'</td><td>'+str(audit_stock.get('拦截', 0))+'</td>') if summary.get('资金模式') == '共享资金池网格' else ''}</tr>"
-        )
+        if summary.get('资金模式') == '共享资金池网格':
+            portfolio_stock = summary.get("组合股票汇总", {}).get(stock) or legacy_stock_summary.get(stock, {})
+            actual_buys = int(portfolio_stock.get("实际买入", 0))
+            actual_sells = int(portfolio_stock.get("实际卖出", 0))
+            contribution_pct = float(portfolio_stock.get("收益贡献率", 0)) * 100
+            if not first_stock_url and actual_buys + actual_sells > 0:
+                first_stock_url = url
+            rows.append(
+                f"<tr data-stock='{stock}' data-return='{contribution_pct}' data-drawdown='{float(item.get('最大回撤', 0))*100}' data-trades='{actual_buys + actual_sells}'>"
+                f"<td><a href='{url}' target='stock_view' title='查看组合实际成交回放'>{stock}</a></td>"
+                f"<td class='{'positive' if contribution_pct >= 0 else 'negative'}'>{contribution_pct:+.2f}%</td>"
+                f"<td>{actual_buys}/{actual_sells}</td>"
+                f"<td>{int(portfolio_stock.get('期末股数', 0)):,}</td>"
+                f"<td>{int(portfolio_stock.get('组合拦截', audit_stock.get('拦截', 0)))}</td>"
+                f"<td class='muted-cell'>{return_pct:+.2f}%</td></tr>"
+            )
+        else:
+            if not first_stock_url:
+                first_stock_url = url
+            rows.append(
+                f"<tr data-stock='{stock}' data-return='{return_pct}' data-drawdown='{float(item.get('最大回撤', 0))*100}'>"
+                f"<td><a href='{url}' target='stock_view'>{stock}</a></td>"
+                f"<td class='{'positive' if return_pct >= 0 else 'negative'}'>{return_pct:+.2f}%</td>"
+                f"<td>{float(item.get('最大回撤', 0))*100:.2f}%</td>"
+                f"<td>{int(item.get('买入次数', 0))}/{int(item.get('卖出次数', 0))}</td>"
+                f"<td>{float(item.get('最终权益', 0)):,.0f}</td></tr>"
+            )
+    first_stock_url = first_stock_url or fallback_stock_url
     page = f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>多股策略决策回放</title>
-<style>:root{{--bg:#090d15;--panel:#111827;--panel2:#172033;--line:#283449;--text:#e8edf6;--muted:#8490a5;--blue:#7184ff;--cyan:#39d6bd;--red:#ff617d;--gold:#f4bd50;--purple:#a774e8}}*{{box-sizing:border-box}}html,body{{height:100%;margin:0;overflow:hidden;background:radial-gradient(circle at 20% -10%,#18213a 0,transparent 34%),var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}}button,input{{font:inherit}}body{{display:grid;grid-template-rows:auto 250px minmax(0,1fr);gap:8px;padding:8px}}.overview,.chart-card,.panel{{background:rgba(17,24,39,.96);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 28px rgba(0,0,0,.16)}}.overview{{padding:10px 12px}}.overview-head{{display:flex;align-items:center;gap:12px;margin-bottom:8px}}h1{{font-size:17px;color:var(--red);margin:0;white-space:nowrap}}.fund-note{{font-size:10px;color:var(--gold);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.config-button{{margin-left:auto;border:1px solid var(--line);background:#202b40;color:var(--text);border-radius:5px;padding:5px 9px;cursor:pointer}}.metric-grid{{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:7px}}.metric{{background:linear-gradient(135deg,#172135,#111827);border:1px solid #26334a;border-radius:7px;padding:7px 9px}}.metric span{{display:block;color:var(--muted);font-size:9px;margin-bottom:3px}}.metric b{{font-size:14px;color:#fff}}.metric .good{{color:var(--cyan)}}.config-summary{{display:flex;gap:7px;margin-top:7px;overflow:hidden}}.config-summary div{{background:#151e30;border-radius:4px;padding:4px 7px;color:var(--muted);font-size:9px;white-space:nowrap}}.config-summary b{{color:#cbd5e1}}.analysis{{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(360px,1fr);gap:8px;min-height:0}}.chart-card{{position:relative;min-width:0;min-height:0;padding:34px 10px 8px}}.chart-title{{position:absolute;left:12px;top:9px;font-size:12px;font-weight:700}}.legend{{position:absolute;right:12px;top:9px;display:flex;gap:12px;font-size:10px;color:var(--muted)}}.legend i{{display:inline-block;width:14px;height:2px;margin-right:4px;vertical-align:middle}}canvas{{width:100%;height:100%;display:block}}.main{{display:grid;grid-template-columns:380px minmax(0,1fr);gap:8px;min-height:0}}.stock-panel{{display:flex;flex-direction:column;overflow:hidden}}.stock-tools{{display:flex;gap:6px;padding:8px;border-bottom:1px solid var(--line)}}.stock-tools input{{min-width:0;flex:1;background:#0c1220;border:1px solid var(--line);color:#fff;border-radius:5px;padding:6px 8px;outline:none}}.stock-tools button{{border:1px solid var(--line);background:#1a2437;color:var(--muted);border-radius:5px;padding:5px 7px;cursor:pointer}}.table-wrap{{overflow:auto;min-height:0}}table{{width:100%;border-collapse:collapse;font-size:11px}}thead{{position:sticky;top:0;z-index:2;background:#172033}}th,td{{padding:7px;border-bottom:1px solid #222e42;text-align:right;white-space:nowrap}}th:first-child,td:first-child{{text-align:left}}tbody tr:hover{{background:#19243a}}a{{color:#93a4ff;text-decoration:none}}.positive{{color:var(--red)}}.negative{{color:var(--cyan)}}.viewer{{overflow:hidden}}iframe{{width:100%;height:100%;border:0;background:var(--bg)}}.config-pop{{position:fixed;inset:0;display:none;z-index:20;background:rgba(4,7,12,.7);align-items:flex-start;justify-content:flex-end;padding:58px 20px}}.config-pop.open{{display:flex}}.config-body{{width:min(620px,85vw);max-height:70vh;overflow:auto;background:#151e30;border:1px solid #35425a;border-radius:9px;padding:14px;box-shadow:0 18px 55px #000}}.config-body div{{padding:7px 0;border-bottom:1px solid var(--line);font-size:11px;line-height:1.5}}body.analysis-collapsed{{grid-template-rows:auto 0 minmax(0,1fr)}}body.analysis-collapsed .analysis{{visibility:hidden}}@media(max-width:1050px){{.metric-grid{{grid-template-columns:repeat(3,1fr)}}body{{grid-template-rows:auto 220px minmax(0,1fr)}}.main{{grid-template-columns:320px minmax(0,1fr)}}}}@media(max-height:760px){{body{{grid-template-rows:auto 210px minmax(0,1fr)}}.metric{{padding:5px 8px}}}}</style></head>
+<style>:root{{--bg:#090d15;--panel:#111827;--panel2:#172033;--line:#283449;--text:#e8edf6;--muted:#8490a5;--blue:#7184ff;--cyan:#39d6bd;--red:#ff617d;--gold:#f4bd50;--purple:#a774e8;--stock-width:360px}}*{{box-sizing:border-box}}html,body{{height:100%;margin:0;background:#090d15;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}}button,input{{font:inherit}}body{{display:flex;flex-direction:column;gap:8px;padding:8px;overflow:hidden}}.overview,.chart-card,.panel{{background:#111827;border:1px solid var(--line);border-radius:7px}}.overview{{padding:9px 11px;flex:none}}.overview-head{{display:flex;align-items:center;gap:10px;margin-bottom:7px}}h1{{font-size:17px;color:var(--red);margin:0;white-space:nowrap}}.fund-note{{font-size:10px;color:var(--gold);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}}.config-button{{border:1px solid var(--line);background:#202b40;color:var(--text);border-radius:5px;padding:5px 9px;cursor:pointer;white-space:nowrap}}.metric-grid{{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:6px}}.metric{{background:#172135;border:1px solid #26334a;border-radius:6px;padding:6px 8px}}.metric span{{display:block;color:var(--muted);font-size:9px;margin-bottom:2px}}.metric b{{font-size:14px;color:#fff}}.metric .good{{color:var(--cyan)}}.config-summary{{display:flex;gap:6px;margin-top:6px;overflow:hidden}}.config-summary div{{background:#151e30;border-radius:4px;padding:4px 7px;color:var(--muted);font-size:9px;white-space:nowrap}}.config-summary b{{color:#cbd5e1}}.analysis{{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,1fr);gap:8px;height:clamp(170px,27vh,320px);min-height:140px;resize:vertical;overflow:hidden;flex:none}}.chart-card{{position:relative;min-width:0;min-height:0;padding:32px 9px 7px}}.chart-title{{position:absolute;left:11px;top:8px;font-size:12px;font-weight:700}}.legend{{position:absolute;right:11px;top:8px;display:flex;gap:10px;font-size:10px;color:var(--muted)}}.legend i{{display:inline-block;width:14px;height:2px;margin-right:4px;vertical-align:middle}}canvas{{width:100%;height:100%;display:block}}.main{{display:grid;grid-template-columns:minmax(270px,var(--stock-width)) 6px minmax(0,1fr);min-height:280px;flex:1;overflow:hidden}}.splitter{{cursor:col-resize;background:#263248;border-radius:3px;margin:5px 1px}}.splitter:hover{{background:var(--blue)}}.stock-panel{{display:flex;flex-direction:column;overflow:hidden}}.stock-tools{{display:flex;gap:6px;padding:8px;border-bottom:1px solid var(--line)}}.stock-tools input{{min-width:0;flex:1;background:#0c1220;border:1px solid var(--line);color:#fff;border-radius:5px;padding:6px 8px;outline:none}}.stock-tools button{{border:1px solid var(--line);background:#1a2437;color:var(--muted);border-radius:5px;padding:5px 7px;cursor:pointer}}.table-wrap{{overflow:auto;min-height:0}}table{{width:100%;border-collapse:collapse;font-size:11px}}thead{{position:sticky;top:0;z-index:2;background:#172033}}th,td{{padding:7px;border-bottom:1px solid #222e42;text-align:right;white-space:nowrap}}th:first-child,td:first-child{{text-align:left}}tbody tr:hover{{background:#19243a}}a{{color:#93a4ff;text-decoration:none}}.positive{{color:var(--red)}}.negative{{color:var(--cyan)}}.muted-cell{{color:var(--muted)}}.viewer{{overflow:hidden}}iframe{{width:100%;height:100%;border:0;background:var(--bg)}}.config-pop{{position:fixed;inset:0;display:none;z-index:20;background:rgba(4,7,12,.7);align-items:flex-start;justify-content:flex-end;padding:58px 20px}}.config-pop.open{{display:flex}}.config-body{{width:min(620px,85vw);max-height:70vh;overflow:auto;background:#151e30;border:1px solid #35425a;border-radius:7px;padding:14px}}.config-body div{{padding:7px 0;border-bottom:1px solid var(--line);font-size:11px;line-height:1.5}}body.analysis-collapsed .analysis{{height:0;min-height:0;visibility:hidden}}@media(max-width:1050px){{.metric-grid{{grid-template-columns:repeat(3,1fr)}}.analysis{{grid-template-columns:1fr;height:240px;overflow:auto}}.main{{grid-template-columns:300px 5px minmax(650px,1fr);overflow:auto}}}}@media(max-height:760px){{.analysis{{height:180px}}.metric{{padding:4px 7px}}}}</style></head>
 <body><section class="overview"><div class="overview-head"><h1>多股策略决策回放台</h1><div class="fund-note">{summary.get('资金模式', '等额独立资金池')} · {('单股上限 '+format(float(form.get('base_position', 0)), ',.0f')+' 元，组合统一审批' if form.get('portfolio_mode') == 'shared_grid' else '每股约 '+format(float(form['capital'])/max(len(details),1), ',.0f')+' 元')} · 实际成交才显示箭头和连线</div><button class="config-button" id="analysisToggle">收起图表</button><button class="config-button" id="configToggle">策略配置</button></div><div class="metric-grid"><div class="metric"><span>组合初始资金</span><b>{float(summary.get('组合初始资金', form['capital'])):,.0f}</b></div><div class="metric"><span>组合最终权益</span><b>{float(summary.get('组合最终权益', form['capital'])):,.0f}</b></div><div class="metric"><span>组合收益</span><b class="good">{float(summary.get('组合总收益率', 0))*100:+.2f}%</b></div><div class="metric"><span>组合最大回撤</span><b>{float(summary.get('组合最大回撤', 0))*100:.2f}%</b></div><div class="metric"><span>最大使用资金</span><b>{float(summary.get('最大使用资金', 0)):,.0f}</b></div><div class="metric"><span>最小非零使用资金</span><b>{float(summary.get('最小使用资金', 0)):,.0f}</b></div></div><div class="config-summary">{''.join(config_lines)}</div></section>
 <section class="analysis"><div class="chart-card"><div class="chart-title">组合累计收益 vs 沪深300</div><div class="legend"><span><i style="background:#7184ff"></i>组合</span><span><i style="background:#a774e8"></i>沪深300</span><span><i style="background:#39d6bd"></i>超额</span></div><canvas id="returnChart"></canvas></div><div class="chart-card"><div class="chart-title">资金使用与可用现金</div><div class="legend"><span><i style="background:#f4bd50"></i>持仓市值</span><span><i style="background:#39d6bd"></i>现金</span><span><i style="background:#7184ff"></i>使用率</span></div><canvas id="capitalChart"></canvas></div></section>
-<main class="main"><section class="panel stock-panel"><div class="stock-tools"><input id="stockSearch" placeholder="搜索股票代码"><button data-sort="return">收益排序</button><button data-sort="drawdown">回撤排序</button></div><div class="table-wrap"><table id="stockTable"><thead><tr><th>股票</th><th>收益</th><th>回撤</th><th>买/卖</th><th>期末权益</th>{'<th>组合成交</th><th>组合拦截</th>' if summary.get('资金模式') == '共享资金池网格' else ''}</tr></thead><tbody>{''.join(rows)}</tbody></table></div></section><section class="panel viewer"><iframe name="stock_view" src="{first_stock_url}" title="股票策略决策回放"></iframe></section></main>
+<main class="main"><section class="panel stock-panel"><div class="stock-tools"><input id="stockSearch" placeholder="搜索股票代码"><button data-sort="trades">成交优先</button><button data-sort="return">贡献排序</button></div><div class="table-wrap"><table id="stockTable"><thead><tr>{'<th>股票</th><th>组合贡献</th><th>实际买/卖</th><th>期末股数</th><th>组合拦截</th><th>候选收益</th>' if summary.get('资金模式') == '共享资金池网格' else '<th>股票</th><th>收益</th><th>回撤</th><th>买/卖</th><th>期末权益</th>'}</tr></thead><tbody>{''.join(rows)}</tbody></table></div></section><div class="splitter" id="mainSplitter" title="拖动调整股票列表宽度"></div><section class="panel viewer"><iframe name="stock_view" src="{first_stock_url}" title="股票策略决策回放"></iframe></section></main>
 <div class="config-pop" id="configPop"><div class="config-body"><strong>本次多股策略配置</strong>{''.join(config_lines)}</div></div>
-<script>const curve={json.dumps(equity_curve, ensure_ascii=False)};const initial={float(summary.get('组合初始资金', form['capital']))};const money=v=>new Intl.NumberFormat('zh-CN',{{maximumFractionDigits:0}}).format(v);function setupCanvas(id){{const canvas=document.getElementById(id),rect=canvas.getBoundingClientRect(),dpr=window.devicePixelRatio||1;canvas.width=Math.max(1,rect.width*dpr);canvas.height=Math.max(1,rect.height*dpr);const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);return{{canvas,ctx,w:rect.width,h:rect.height}}}}function line(ctx,values,x,y,color,width=2,dash=[]){{ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=width;ctx.setLineDash(dash);values.forEach((v,i)=>{{if(v==null)return;const px=x(i),py=y(v);i?ctx.lineTo(px,py):ctx.moveTo(px,py)}});ctx.stroke();ctx.setLineDash([])}}function grid(ctx,w,h,min,max,format){{ctx.font='10px sans-serif';ctx.fillStyle='#7f8ba0';ctx.strokeStyle='#263248';ctx.lineWidth=1;for(let i=0;i<5;i++){{const y=15+i*(h-32)/4,value=max-(max-min)*i/4;ctx.beginPath();ctx.moveTo(48,y);ctx.lineTo(w-8,y);ctx.stroke();ctx.fillText(format(value),4,y+3)}}}}function drawReturns(){{const{{ctx,w,h}}=setupCanvas('returnChart');if(!curve.length)return;const strategy=curve.map(p=>(p.权益/initial-1)*100),hs=curve.map(p=>p['沪深300权益']?(p['沪深300权益']/initial-1)*100:null),alpha=strategy.map((v,i)=>hs[i]==null?null:v-hs[i]);const vals=[...strategy,...hs,...alpha].filter(Number.isFinite),min=Math.min(...vals,0),max=Math.max(...vals,0),span=max-min||1,x=i=>48+i*(w-58)/Math.max(1,curve.length-1),y=v=>15+(max-v)/span*(h-32);grid(ctx,w,h,min,max,v=>v.toFixed(1)+'%');line(ctx,strategy,x,y,'#7184ff',2.4);line(ctx,hs,x,y,'#a774e8',1.8);line(ctx,alpha,x,y,'#39d6bd',1.4,[5,3]);ctx.fillStyle='#7184ff';ctx.fillText('组合 '+strategy.at(-1).toFixed(2)+'%',52,12);if(hs.at(-1)!=null){{ctx.fillStyle='#a774e8';ctx.fillText('沪深300 '+hs.at(-1).toFixed(2)+'%',145,12);ctx.fillStyle='#39d6bd';ctx.fillText('超额 '+alpha.at(-1).toFixed(2)+'%',260,12)}}}}function drawCapital(){{const{{ctx,w,h}}=setupCanvas('capitalChart');if(!curve.length)return;const cash=curve.map(p=>p.现金),used=curve.map(p=>p['持仓市值']),rate=curve.map(p=>p['资金使用率']*100),max=Math.max(initial,...cash,...used),x=i=>48+i*(w-58)/Math.max(1,curve.length-1),y=v=>15+(max-v)/max*(h-32),yr=v=>15+(100-v)/100*(h-32);grid(ctx,w,h,0,max,v=>money(v/10000)+'万');line(ctx,used,x,y,'#f4bd50',2);line(ctx,cash,x,y,'#39d6bd',1.8);line(ctx,rate,x,yr,'#7184ff',1.4,[4,3]);ctx.fillStyle='#7184ff';ctx.fillText('当前使用率 '+rate.at(-1).toFixed(1)+'%',w-125,12)}}function draw(){{drawReturns();drawCapital()}}window.addEventListener('resize',draw);draw();document.getElementById('analysisToggle').onclick=e=>{{document.body.classList.toggle('analysis-collapsed');e.target.textContent=document.body.classList.contains('analysis-collapsed')?'展开图表':'收起图表';setTimeout(draw,50)}};const pop=document.getElementById('configPop');document.getElementById('configToggle').onclick=()=>pop.classList.add('open');pop.onclick=e=>{{if(e.target===pop)pop.classList.remove('open')}};document.getElementById('stockSearch').oninput=e=>{{const q=e.target.value.trim();document.querySelectorAll('#stockTable tbody tr').forEach(row=>row.hidden=!row.dataset.stock?.includes(q))}};document.querySelectorAll('[data-sort]').forEach(button=>button.onclick=()=>{{const key=button.dataset.sort,tbody=document.querySelector('#stockTable tbody'),rows=[...tbody.rows];rows.sort((a,b)=>Number(b.dataset[key])-Number(a.dataset[key]));rows.forEach(row=>tbody.appendChild(row))}});document.querySelectorAll('#stockTable a').forEach(link=>link.onclick=()=>{{document.querySelectorAll('#stockTable tr').forEach(row=>row.style.background='');link.closest('tr').style.background='#202d47'}});</script></body></html>'''
+<script>const curve={json.dumps(equity_curve, ensure_ascii=False)};const initial={float(summary.get('组合初始资金', form['capital']))};const money=v=>new Intl.NumberFormat('zh-CN',{{maximumFractionDigits:0}}).format(v);function setupCanvas(id){{const canvas=document.getElementById(id),rect=canvas.getBoundingClientRect(),dpr=window.devicePixelRatio||1;canvas.width=Math.max(1,rect.width*dpr);canvas.height=Math.max(1,rect.height*dpr);const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);return{{canvas,ctx,w:rect.width,h:rect.height}}}}function line(ctx,values,x,y,color,width=2,dash=[]){{ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=width;ctx.setLineDash(dash);values.forEach((v,i)=>{{if(v==null)return;const px=x(i),py=y(v);i?ctx.lineTo(px,py):ctx.moveTo(px,py)}});ctx.stroke();ctx.setLineDash([])}}function grid(ctx,w,h,min,max,format){{ctx.font='10px sans-serif';ctx.fillStyle='#7f8ba0';ctx.strokeStyle='#263248';ctx.lineWidth=1;for(let i=0;i<5;i++){{const y=15+i*(h-32)/4,value=max-(max-min)*i/4;ctx.beginPath();ctx.moveTo(48,y);ctx.lineTo(w-8,y);ctx.stroke();ctx.fillText(format(value),4,y+3)}}}}function drawReturns(){{const{{ctx,w,h}}=setupCanvas('returnChart');if(!curve.length)return;const strategy=curve.map(p=>(p.权益/initial-1)*100),hs=curve.map(p=>p['沪深300权益']?(p['沪深300权益']/initial-1)*100:null),alpha=strategy.map((v,i)=>hs[i]==null?null:v-hs[i]);const vals=[...strategy,...hs,...alpha].filter(Number.isFinite),min=Math.min(...vals,0),max=Math.max(...vals,0),span=max-min||1,x=i=>48+i*(w-58)/Math.max(1,curve.length-1),y=v=>15+(max-v)/span*(h-32);grid(ctx,w,h,min,max,v=>v.toFixed(1)+'%');line(ctx,strategy,x,y,'#7184ff',2.4);line(ctx,hs,x,y,'#a774e8',1.8);line(ctx,alpha,x,y,'#39d6bd',1.4,[5,3]);ctx.fillStyle='#7184ff';ctx.fillText('组合 '+strategy.at(-1).toFixed(2)+'%',52,12);if(hs.at(-1)!=null){{ctx.fillStyle='#a774e8';ctx.fillText('沪深300 '+hs.at(-1).toFixed(2)+'%',145,12);ctx.fillStyle='#39d6bd';ctx.fillText('超额 '+alpha.at(-1).toFixed(2)+'%',260,12)}}}}function drawCapital(){{const{{ctx,w,h}}=setupCanvas('capitalChart');if(!curve.length)return;const cash=curve.map(p=>p.现金),used=curve.map(p=>p['持仓市值']),rate=curve.map(p=>p['资金使用率']*100),max=Math.max(initial,...cash,...used),x=i=>48+i*(w-58)/Math.max(1,curve.length-1),y=v=>15+(max-v)/max*(h-32),yr=v=>15+(100-v)/100*(h-32);grid(ctx,w,h,0,max,v=>money(v/10000)+'万');line(ctx,used,x,y,'#f4bd50',2);line(ctx,cash,x,y,'#39d6bd',1.8);line(ctx,rate,x,yr,'#7184ff',1.4,[4,3]);ctx.fillStyle='#7184ff';ctx.fillText('当前使用率 '+rate.at(-1).toFixed(1)+'%',w-125,12)}}function draw(){{drawReturns();drawCapital()}}window.addEventListener('resize',draw);new ResizeObserver(draw).observe(document.querySelector('.analysis'));draw();document.getElementById('analysisToggle').onclick=e=>{{document.body.classList.toggle('analysis-collapsed');e.target.textContent=document.body.classList.contains('analysis-collapsed')?'展开图表':'收起图表';setTimeout(draw,50)}};const pop=document.getElementById('configPop');document.getElementById('configToggle').onclick=()=>pop.classList.add('open');pop.onclick=e=>{{if(e.target===pop)pop.classList.remove('open')}};document.getElementById('stockSearch').oninput=e=>{{const q=e.target.value.trim();document.querySelectorAll('#stockTable tbody tr').forEach(row=>row.hidden=!row.dataset.stock?.includes(q))}};document.querySelectorAll('[data-sort]').forEach(button=>button.onclick=()=>{{const key=button.dataset.sort,tbody=document.querySelector('#stockTable tbody'),rows=[...tbody.rows];rows.sort((a,b)=>Number(b.dataset[key]||0)-Number(a.dataset[key]||0));rows.forEach(row=>tbody.appendChild(row))}});document.querySelectorAll('#stockTable a').forEach(link=>link.onclick=()=>{{document.querySelectorAll('#stockTable tr').forEach(row=>row.style.background='');link.closest('tr').style.background='#202d47'}});const splitter=document.getElementById('mainSplitter');let resizing=false;splitter.onpointerdown=e=>{{resizing=true;splitter.setPointerCapture(e.pointerId)}};splitter.onpointermove=e=>{{if(!resizing)return;const left=document.querySelector('.main').getBoundingClientRect().left,width=Math.max(270,Math.min(620,e.clientX-left));document.documentElement.style.setProperty('--stock-width',width+'px')}};splitter.onpointerup=()=>resizing=false;</script></body></html>'''
     with open(path, "w", encoding="utf-8") as target:
         target.write(page)
 
 
-def 刷新多股单票回放(details, config_dir=None, portfolio_audit=None):
-    """用已保存的成交、持仓和行情重建单票回放，无需重新执行策略。"""
-    import pandas as pd
+def _读取配置快照(config_dir):
+    snapshot = {}
+    if not config_dir or not os.path.isdir(config_dir):
+        return snapshot
+    for name in os.listdir(config_dir):
+        path = os.path.join(config_dir, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as source:
+                snapshot[name] = json.load(source) if name.endswith(".json") else yaml.safe_load(source)
+        except (OSError, ValueError, yaml.YAMLError, json.JSONDecodeError):
+            continue
+    return snapshot
 
+
+def _准备回放K线(raw, holding):
+    start = str(holding["日期"].iloc[0])[:10]
+    end = str(holding["日期"].iloc[-1])[:10]
+    day = raw["日期"].astype(str).str[:10]
+    selected = raw[(day >= start) & (day <= end)].copy()
+    if "完整时间" in selected.columns:
+        timestamps = pd.to_datetime(selected["完整时间"], errors="coerce")
+    else:
+        timestamps = pd.Series(
+            pd.to_datetime(selected.index, errors="coerce"), index=selected.index
+        )
+    fallback = pd.to_datetime(selected["日期"], errors="coerce")
+    selected["完整时间"] = timestamps.where(timestamps.notna(), fallback).dt.strftime("%Y-%m-%d %H:%M")
+    return selected.reset_index(drop=True)
+
+
+def _审计K线索引(audit_rows, raw):
+    exact = {}
+    by_day = {}
+    for index, value in enumerate(raw["完整时间"].astype(str)):
+        exact.setdefault(value[:16], []).append(index)
+        by_day.setdefault(value[:10], []).append(index)
+    used = set()
+    located = []
+    for audit in audit_rows:
+        timestamp = str(audit.get("时间", ""))[:16]
+        candidates = exact.get(timestamp, []) or by_day.get(timestamp[:10], [])
+        index = next((value for value in candidates if value not in used), candidates[-1] if candidates else None)
+        if index is not None and audit.get("结果") == "实际成交":
+            used.add(index)
+        row = dict(audit)
+        row["K线索引"] = index
+        located.append(row)
+    return located
+
+
+def _构建组合实际交易(stock, audit_rows, raw):
+    columns = [
+        "序号", "股票代码", "持仓组ID", "网格级别", "时间", "K线时间", "K线索引",
+        "类型", "买入价", "卖出价", "前复权成交价", "前复权买入价", "前复权卖出价",
+        "信号类型", "卖出原因", "成交数量", "仓位", "交易费用", "总成本", "卖出净金额",
+        "盈亏比例", "组合成交ID",
+    ]
+    rows = []
+    shares = 0
+    cost = 0.0
+    sequence = 0
+    for audit in audit_rows:
+        if audit.get("结果") != "实际成交" or audit.get("类型") not in ("买入", "卖出"):
+            continue
+        index = audit.get("K线索引")
+        quantity = int(float(audit.get("成交股数", 0) or 0))
+        price = float(audit.get("成交价", 0) or 0)
+        if index is None or quantity < 100 or price <= 0:
+            continue
+        sequence += 1
+        kind = str(audit["类型"])
+        fee = float(audit.get("交易费用", 0) or 0)
+        qfq_close = float(raw.iloc[index].get("前复权_收盘", price) or price)
+        bfq_close = float(raw.iloc[index].get("不复权_收盘", price) or price)
+        qfq_price = price * qfq_close / bfq_close if bfq_close > 0 else qfq_close
+        pnl = None
+        if kind == "买入":
+            cost += price * quantity + fee
+            shares += quantity
+        else:
+            sold = min(quantity, shares)
+            average = cost / shares if shares > 0 else price
+            pnl = price / average - 1 if average > 0 else 0.0
+            if shares > 0:
+                cost *= max(0.0, 1 - sold / shares)
+            shares -= sold
+            if shares <= 0:
+                shares = 0
+                cost = 0.0
+        row = {
+            "序号": sequence,
+            "股票代码": stock,
+            "持仓组ID": stock,
+            "网格级别": audit.get("网格层级", 0),
+            "时间": str(audit.get("时间", ""))[:16],
+            "K线时间": str(raw.iloc[index].get("完整时间", ""))[:16],
+            "K线索引": index,
+            "类型": kind,
+            "买入价": price if kind == "买入" else None,
+            "卖出价": price if kind == "卖出" else None,
+            "前复权成交价": qfq_price,
+            "前复权买入价": qfq_price if kind == "买入" else None,
+            "前复权卖出价": qfq_price if kind == "卖出" else None,
+            "信号类型": audit.get("原因", "") if kind == "买入" else "",
+            "卖出原因": audit.get("原因", "") if kind == "卖出" else "",
+            "成交数量": quantity,
+            "仓位": price * quantity,
+            "交易费用": fee,
+            "总成本": float(audit.get("成交净额", price * quantity) or price * quantity),
+            "卖出净金额": float(audit.get("成交净额", price * quantity) or price * quantity) if kind == "卖出" else None,
+            "盈亏比例": pnl,
+            "组合成交ID": audit.get("成交ID", ""),
+        }
+        rows.append(row)
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _构建组合实际持仓(holding, raw, trades, audit_rows, initial_capital):
+    state = holding.copy()
+    if "K线索引" not in state.columns:
+        state["K线索引"] = range(len(state))
+    state_by_index = {int(row["K线索引"]): position for position, row in state.iterrows()}
+    trade_by_index = {}
+    for _, trade in trades.iterrows():
+        trade_by_index.setdefault(int(trade["K线索引"]), []).append(trade)
+    audit_by_index = {}
+    for audit in audit_rows:
+        if audit.get("K线索引") is not None:
+            audit_by_index.setdefault(int(audit["K线索引"]), []).append(audit)
+
+    cash = float(initial_capital)
+    shares = 0
+    cost = 0.0
+    for index in range(len(raw)):
+        for trade in trade_by_index.get(index, []):
+            quantity = int(trade["成交数量"])
+            price = float(trade["买入价"] if trade["类型"] == "买入" else trade["卖出价"])
+            fee = float(trade.get("交易费用", 0) or 0)
+            if trade["类型"] == "买入":
+                cash -= price * quantity + fee
+                cost += price * quantity + fee
+                shares += quantity
+            else:
+                sold = min(quantity, shares)
+                cash += float(trade.get("卖出净金额", price * sold) or price * sold)
+                if shares > 0:
+                    cost *= max(0.0, 1 - sold / shares)
+                shares -= sold
+                if shares <= 0:
+                    shares = 0
+                    cost = 0.0
+        position = state_by_index.get(index)
+        if position is None:
+            continue
+        close = float(raw.iloc[index].get("不复权_收盘", 0) or 0)
+        market = shares * close
+        state.at[position, "K线时间"] = str(raw.iloc[index].get("完整时间", ""))[:16]
+        state.at[position, "当前现金"] = round(cash, 2)
+        state.at[position, "持仓市值"] = round(market, 2)
+        state.at[position, "权益"] = round(cash + market, 2)
+        state.at[position, "持仓数量"] = shares
+        approvals = audit_by_index.get(index, [])
+        actual = next((row for row in approvals if row.get("结果") == "实际成交"), None)
+        if actual:
+            state.at[position, "最终动作"] = f"组合{actual['类型']}"
+            state.at[position, "动作原因"] = str(actual.get("原因", "组合资金池批准成交"))
+        elif approvals:
+            state.at[position, "最终动作"] = str(approvals[0].get("结果", "组合未成交"))
+            state.at[position, "动作原因"] = str(approvals[0].get("原因", "组合资金池未批准"))
+        elif any(word in str(state.at[position, "最终动作"]) for word in ("买入", "卖出", "加仓")):
+            state.at[position, "最终动作"] = "候选信号"
+            state.at[position, "动作原因"] = "单股策略候选动作，未形成组合实际成交"
+    return state
+
+
+def 刷新多股单票回放(details, config_dir=None, portfolio_audit=None):
+    """按组合实际成交按需生成单票回放，不改写候选交易证据。"""
     refreshed = 0
+    config_snapshot = _读取配置快照(config_dir)
     for item in details:
         if "错误" in item:
             continue
         stock = str(item.get("股票代码", ""))
         result_dir = item.get("结果目录", "")
-        trades_path = os.path.join(result_dir, "交易明细.csv")
         holding_path = os.path.join(result_dir, "持仓过程.csv")
         raw_path = os.path.join(项目根目录, "数据模块", "raw", f"{stock}_双价格合并.pkl")
-        if not all(os.path.isfile(candidate) for candidate in (trades_path, holding_path, raw_path)):
+        if not all(os.path.isfile(candidate) for candidate in (holding_path, raw_path)):
             continue
         try:
-            trades = pd.read_csv(trades_path, encoding="utf-8-sig")
             holding = pd.read_csv(holding_path, encoding="utf-8-sig")
-            if portfolio_audit is not None and not trades.empty:
-                allowed = {}
-                for audit in portfolio_audit:
-                    if audit.get("结果") != "实际成交":
-                        continue
-                    key = (str(audit.get("时间", ""))[:16], str(audit.get("类型", "")))
-                    allowed.setdefault(key, []).append(audit)
-                kept = []
-                for _, trade in trades.iterrows():
-                    key = (str(trade.get("时间", ""))[:16], str(trade.get("类型", "")))
-                    candidates = allowed.get(key, [])
-                    if not candidates:
-                        continue
-                    audit = candidates.pop(0)
-                    row = trade.copy()
-                    quantity = int(float(audit.get("成交股数", 0) or 0))
-                    if quantity < 100:
-                        continue
-                    row["成交数量"] = quantity
-                    kept.append(row)
-                trades = pd.DataFrame(kept, columns=trades.columns)
-                trades.to_csv(trades_path, index=False, encoding="utf-8-sig")
-            raw = pd.read_pickle(raw_path)
-            start = str(holding["日期"].iloc[0])[:10]
-            end = str(holding["日期"].iloc[-1])[:10]
-            day = raw["日期"].astype(str).str[:10]
-            raw = raw[(day >= start) & (day <= end)].reset_index(drop=True)
-            config_snapshot = {}
-            if config_dir and os.path.isdir(config_dir):
-                for name in os.listdir(config_dir):
-                    config_path = os.path.join(config_dir, name)
-                    if not os.path.isfile(config_path):
-                        continue
-                    try:
-                        with open(config_path, encoding="utf-8") as source:
-                            config_snapshot[name] = json.load(source) if name.endswith(".json") else yaml.safe_load(source)
-                    except (OSError, ValueError, yaml.YAMLError, json.JSONDecodeError):
-                        continue
+            raw = _准备回放K线(pd.read_pickle(raw_path), holding)
+            stock_audit = [
+                row for row in (portfolio_audit or [])
+                if str(row.get("股票代码", "")) == stock
+            ]
+            located_audit = _审计K线索引(stock_audit, raw)
+            trades = _构建组合实际交易(stock, located_audit, raw)
+            initial = float(item.get("初始资金", 0) or 0)
+            actual_holding = _构建组合实际持仓(holding, raw, trades, located_audit, initial)
+            trades.to_csv(os.path.join(result_dir, "组合实际成交.csv"), index=False, encoding="utf-8-sig")
+            final_cash = float(actual_holding["当前现金"].iloc[-1]) if len(actual_holding) else initial
+            final_equity = float(actual_holding["权益"].iloc[-1]) if len(actual_holding) else initial
+            sells = trades[trades["类型"] == "卖出"] if not trades.empty else trades
             result = dict(item)
             result.update({
                 "交易明细": trades,
-                "持仓过程": holding,
-                "初始资金": item.get("初始资金", 0),
-                "最终现金": item.get("最终权益", 0),
+                "持仓过程": actual_holding,
+                "初始资金": initial,
+                "最终现金": final_cash,
+                "最终权益": final_equity,
+                "总收益率": (final_equity / initial - 1) * 100 if initial else 0.0,
+                "买入次数": int((trades["类型"] == "买入").sum()) if not trades.empty else 0,
+                "卖出次数": int((trades["类型"] == "卖出").sum()) if not trades.empty else 0,
+                "胜率": float((sells["盈亏比例"] > 0).mean() * 100) if len(sells) else 0.0,
                 "数据行数": len(raw),
                 "配置快照": config_snapshot,
-                "运行参数": {},
+                "运行参数": {"组合实际回放": True},
             })
             output = os.path.join(result_dir, "策略决策回放.html")
             if 生成报告(result, raw, 输出路径=output):
                 refreshed += 1
-        except (OSError, ValueError, KeyError, IndexError, pd.errors.ParserError):
+        except (OSError, ValueError, KeyError, IndexError, TypeError, pd.errors.ParserError):
             continue
     return refreshed
 
@@ -2469,6 +2782,11 @@ def 运行多股回测(form):
             max_total_ratio=float(form["max_total_ratio"]),
             cash_floor=float(form["cash_floor"]),
             stock_capital=float(form["base_position"]),
+            grid_mode=form.get("grid_mode", "multiplier"),
+            initial_position_ratio=float(form.get("grid_initial_ratio", 0.25) or 0.25),
+            followup_position_ratio=float(form.get("grid_followup_ratio", 0.25) or 0.25),
+            grid_multiplier=float(form.get("grid_multiplier", 2.0) or 2.0),
+            max_add_count=int(form.get("grid_max_add_count", 5) or 5),
         )
         组合曲线 = portfolio["组合权益曲线"]
     else:
@@ -2486,6 +2804,7 @@ def 运行多股回测(form):
     非零使用资金 = [value for value in 使用资金列表 if value > 0]
     summary.update({
         "资金模式": "共享资金池网格" if form.get("portfolio_mode") == "shared_grid" else "等额独立资金池",
+        "网格加仓模式": form.get("grid_mode", "multiplier"),
         "组合初始资金": 组合初始资金,
         "组合最终权益": 组合最终权益,
         "组合总收益率": (组合最终权益 - 组合初始资金) / max(组合初始资金, 1.0),
@@ -2499,6 +2818,7 @@ def 运行多股回测(form):
             "当前现金": portfolio.get("当前现金", 0.0),
             "当前持仓数量": portfolio.get("当前持仓数量", 0),
             "组合成交明细": portfolio.get("组合成交明细", []),
+            "组合股票汇总": portfolio.get("组合股票汇总", {}),
         })
         audit_path = os.path.join(run_dir, "组合成交审计.csv")
         audit_rows = portfolio.get("组合成交明细", [])
@@ -2526,7 +2846,6 @@ def 运行多股回测(form):
     multi_token = uuid.uuid4().hex
     multi_report_path = os.path.join(run_dir, "多股策略决策回放.html")
     生成多股策略回放页面(multi_report_path, multi_token, run_dir, details, summary, form, 组合曲线)
-    刷新多股单票回放(details, config_dir, portfolio.get("组合成交明细") if portfolio else None)
     最近多股报告.update({"token": multi_token, "path": multi_report_path, "run_dir": run_dir})
     return {
         "status": f"多股回测完成：{len(valid)}/{len(stocks)} 只股票有结果",
@@ -2584,7 +2903,7 @@ def 获取多股票回放地址():
 
 
 def 恢复最近多股报告():
-    """服务重启后从磁盘恢复最近一次完整多股回放。"""
+    """服务重启后快速恢复最近一次完整多股回放。"""
     if not os.path.isdir(实验记录目录):
         return None
     candidates = []
@@ -2607,70 +2926,19 @@ def 恢复最近多股报告():
         return None
 
     _, run_dir, payload = max(candidates, key=lambda item: item[0])
-    form = 构建工作台表单()
-    saved = 读取最近回测配置()
-    saved_form = saved.get("form", {}) if isinstance(saved, dict) else {}
-    if isinstance(saved_form, dict):
-        form.update(saved_form)
-    form.update({
-        "multi_stocks": "\n".join(str(stock) for stock in payload.get("股票列表", [])),
-        "multi_start": payload.get("开始日期", form.get("multi_start")),
-        "multi_end": payload.get("结束日期", form.get("multi_end")),
-        "multi_capital": payload.get("初始资金", form.get("multi_capital")),
-        "multi_workers": payload.get("并行进程数", form.get("multi_workers")),
-        "multi_rsi_price_source": payload.get("RSI价格源", form.get("multi_rsi_price_source")),
-        "multi_entry_timing": payload.get("买入时机模式", form.get("multi_entry_timing")),
-        "multi_portfolio_mode": "shared_grid" if payload.get("资金分配方式") == "共享资金池网格" else "independent",
-    })
-    mode_form = 提取模式配置(form, "multi")
-    stocks = [str(stock) for stock in payload.get("股票列表", [])]
-    initial_capital = float(payload.get("初始资金", mode_form.get("capital", 0)) or 0)
-    per_stock_capital = float(payload.get("每股资金池", initial_capital / max(len(stocks), 1)) or 0)
-    if payload.get("资金分配方式") == "共享资金池网格":
-        portfolio = 重放共享资金池网格(
-            payload["股票明细"], initial_capital,
-            max_positions=int(form.get("multi_max_positions", 30) or 30),
-            max_single_ratio=float(form.get("multi_max_single_ratio", 0.03) or 0.03),
-            max_total_ratio=float(form.get("multi_max_total_ratio", 0.80) or 0.80),
-            cash_floor=float(form.get("multi_cash_floor", 0.20) or 0.20),
-            stock_capital=float(form.get("multi_base_position", initial_capital * 0.03) or initial_capital * 0.03),
-        )
-        curve = portfolio["组合权益曲线"]
-        summary_audit = portfolio.get("资金审计", {})
-        summary_trades = portfolio.get("组合成交明细", [])
-    else:
-        curve = 构建组合分析曲线(
-            payload["股票明细"], stocks, initial_capital, per_stock_capital,
-            payload.get("开始日期"), payload.get("结束日期"),
-        )
-    summary = dict(payload["汇总"])
-    usage = [point["持仓市值"] for point in curve]
-    nonzero_usage = [value for value in usage if value > 0]
-    summary.update({
-        "最大使用资金": max(usage, default=0.0),
-        "最小使用资金": min(nonzero_usage, default=0.0),
-    })
-    if payload.get("资金分配方式") == "共享资金池网格":
-        summary["资金审计"] = summary_audit
-        summary["组合成交明细"] = summary_trades
-    payload["组合权益曲线"] = curve
-    payload["汇总"] = summary
-    try:
-        with open(os.path.join(run_dir, "多股回测结果.json"), "w", encoding="utf-8") as target:
-            json.dump(payload, target, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
-    token = uuid.uuid4().hex
     report_path = os.path.join(run_dir, "多股策略决策回放.html")
-    生成多股策略回放页面(
-        report_path,
-        token,
-        run_dir,
-        payload["股票明细"],
-        summary,
-        mode_form,
-        curve,
-    )
+    if not os.path.isfile(report_path):
+        return None
+
+    # 回放 HTML 已在回测结束时生成。启动服务时只恢复链接状态，避免再次重放整批股票。
+    import re
+    try:
+        with open(report_path, encoding="utf-8") as source:
+            html = source.read()
+    except OSError:
+        return None
+    match = re.search(r"/multi/([0-9a-f]+)/stock/", html)
+    token = match.group(1) if match else uuid.uuid4().hex
     最近多股报告.update({"token": token, "path": report_path, "run_dir": run_dir})
     return report_path
 
@@ -2699,8 +2967,13 @@ def 首页():
                 form = 应用TB复刻参数(form, "single")
                 result["status"] = "已应用TB复刻参数：最高价RSI买入、TB同根成交对照、最低价RSI下穿卖出。请再点击运行单股回测。"
             elif request.form.get("save_config") == "1":
-                保存最近工作台配置(form)
-                result["status"] = "当前单股和多股选择已保存；下次打开页面会继续使用。"
+                saved = 保存最近工作台配置(form)
+                result["status"] = (
+                    "当前单股和多股选择已保存；刷新页面后仍会保留。"
+                    if saved else
+                    f"保存失败：无法写入 {工作台配置路径}，当前页面选择未落盘。"
+                )
+                result["error"] = not saved
             elif request.form.get("run_mode") == "single":
                 保存最近回测配置(form, "single")
                 last_run_form, last_run_mode = copy.deepcopy(form), "single"
@@ -2833,14 +3106,25 @@ def 查看多股单票回放(token, stock):
         return Response("多股回放不存在或已失效。", status=404, content_type="text/plain; charset=utf-8")
     safe_stock = "".join(ch for ch in str(stock) if ch.isalnum() or ch in "_-" )
     path = os.path.join(最近多股报告["run_dir"], "股票", safe_stock, "策略决策回放.html")
-    if os.path.isfile(path) and os.path.getmtime(path) < os.path.getmtime(os.path.join(项目根目录, "回测引擎", "kline_template.html")):
-        result_path = os.path.join(最近多股报告["run_dir"], "多股回测结果.json")
+    result_path = os.path.join(最近多股报告["run_dir"], "多股回测结果.json")
+    template_path = os.path.join(项目根目录, "回测引擎", "kline_template.html")
+    needs_refresh = (
+        not os.path.isfile(path)
+        or os.path.getmtime(path) < os.path.getmtime(template_path)
+        or os.path.getmtime(path) < os.path.getmtime(result_path)
+    )
+    if needs_refresh:
         try:
             with open(result_path, encoding="utf-8") as source:
                 payload = json.load(source)
             detail = next((item for item in payload.get("股票明细", []) if str(item.get("股票代码")) == safe_stock), None)
             if detail:
-                刷新多股单票回放([detail], os.path.join(最近多股报告["run_dir"], "配置快照_交互"))
+                audit = payload.get("汇总", {}).get("组合成交明细", [])
+                刷新多股单票回放(
+                    [detail],
+                    os.path.join(最近多股报告["run_dir"], "配置快照_交互"),
+                    audit,
+                )
         except (OSError, ValueError, json.JSONDecodeError):
             pass
     if not os.path.isfile(path):

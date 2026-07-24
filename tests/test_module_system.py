@@ -20,7 +20,7 @@ def test_formal_switches_preserve_current_strategy():
     assert manager.是否启用("过滤因子", "rsi_ma_filter") is True
     assert manager.是否启用("卖出规则", "atr_trailing") is True
     assert manager.是否启用("卖出规则", "rsi_guard") is False
-    assert manager.统计()["已启用"] == 10
+    assert manager.统计()["已启用"] == 12
 
 
 def test_unready_module_cannot_be_enabled(tmp_path):
@@ -41,7 +41,7 @@ def test_executor_uses_central_switches():
     }
     assert {item["名称"] for item in executor.卖出规则列表} == {"atr_trailing"}
     assert {item["名称"] for item in executor.过滤因子列表} == {"rsi_ma_filter"}
-    assert executor.哨兵价本根形成立即买入 is False
+    assert executor.哨兵价本根形成立即买入 is True
 
 
 def test_ablation_copy_changes_only_requested_switch(tmp_path):

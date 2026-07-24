@@ -1,7 +1,7 @@
 from 买入执行模块.entry_timing import (
     CLOSE_NEXT_OPEN, LEGACY_SAME_BAR, STRICT_PRECOMPUTED, TB_REPLAY, 哨兵价可执行, 允许旧版本根回填,
 )
-from 成交模型.buy_fill_model import 计算买入成交
+from 成交模型.buy_fill_model import 计算买入成交, 计算回撤买入成交
 from 买入执行模块.sentinel_trigger import 评估触发
 
 
@@ -18,7 +18,7 @@ def test_strict_precomputed_order_does_not_need_current_close_rsi_confirmation()
 
 
 def test_legacy_order_keeps_old_same_bar_confirmation_only_for_comparison():
-    assert 哨兵价可执行(LEGACY_SAME_BAR, 已确认=False, 当根收盘发生上穿=False) is False
+    assert 哨兵价可执行(LEGACY_SAME_BAR, 已确认=False, 当根收盘发生上穿=False) is True
     assert 哨兵价可执行(LEGACY_SAME_BAR, 已确认=False, 当根收盘发生上穿=True) is True
     assert 哨兵价可执行(TB_REPLAY, 已确认=False, 当根收盘发生上穿=True) is True
 
@@ -30,14 +30,15 @@ def test_close_confirmation_is_a_separate_mode():
 def test_strict_modes_force_block_legacy_same_bar_backfill():
     assert 允许旧版本根回填(STRICT_PRECOMPUTED) is False
     assert 允许旧版本根回填(CLOSE_NEXT_OPEN) is False
-    assert 允许旧版本根回填(LEGACY_SAME_BAR) is True
+    assert 允许旧版本根回填(LEGACY_SAME_BAR) is False
     assert 允许旧版本根回填(TB_REPLAY) is True
 
 
-def test_premium_above_bar_high_must_not_fill():
+def test_premium_above_bar_high_is_an_upper_bound_not_a_rejection():
     result = 计算买入成交(100, 105, 98, 105, 1.001)
-    assert result["可成交"] is False
-    assert "最高价" in result["原因"]
+    assert result["可成交"] is True
+    assert result["成交价"] == 105
+    assert result["价格已按最高价截断"] is True
 
 
 def test_gap_and_intrabar_fills_stay_inside_ohlc():
@@ -47,11 +48,24 @@ def test_gap_and_intrabar_fills_stay_inside_ohlc():
     assert touch["可成交"] and 99 <= touch["成交价"] <= 108
 
 
+def test_grid_pullback_premium_is_also_an_upper_bound():
+    result = 计算回撤买入成交(90, 90.05, 89, 90, 1.001)
+    assert result["可成交"] is True
+    assert result["成交价"] == 90.05
+    assert result["价格已按最高价截断"] is True
+
+
+def test_grid_premium_does_not_reject_touching_bar_high():
+    result = 计算回撤买入成交(100, 100, 99, 100, 1.001)
+    assert result["可成交"] is True
+    assert result["成交价"] == 100
+
+
 def test_reverse_below_previous_high_requires_strict_previous_high_breakout():
     equal = 评估触发(98.0, 100.0, trigger_bar(100.0))
     next_tick = 评估触发(98.0, 100.0, trigger_bar(100.01))
-    assert equal["满足"] is False
-    assert equal["前高突破价"] == 100.01
+    assert equal["满足"] is True
+    assert equal["前高突破价"] == 100.0
     assert next_tick["满足"] is True
     assert next_tick["限制条件"] == "上一根高点突破"
 

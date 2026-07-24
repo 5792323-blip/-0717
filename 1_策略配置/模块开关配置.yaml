@@ -7,7 +7,7 @@
     sentinel_build: {名称: 哨兵价形成, 启用: true, 状态: 完成}
     sentinel_breakout: {名称: 哨兵价突破成交, 启用: true, 状态: 完成}
     sentinel_trailing: {名称: 哨兵价突破后上移, 启用: true, 状态: 完成}
-    same_bar_entry: {名称: 旧版本根收盘回填成交, 启用: false, 状态: 完成}
+    same_bar_entry: {名称: 本根形成哨兵价后立即成交, 启用: true, 状态: 完成}
 
   买入规则:
     rsi_cross_20: {名称: RSI上穿20, 启用: true, 状态: 完成, 模块: 5_买入规则.rsi_cross_20}
