@@ -142,7 +142,6 @@ def _保存多股单票结果(result, stock_dir):
     if trades is not None and len(trades) > 0:
         trades, holding = _补充交易K线定位(trades, holding, result.get("原始K线数据"))
         trades.to_csv(os.path.join(stock_dir, "交易明细.csv"), index=False, encoding="utf-8-sig")
-        trades.to_csv(os.path.join(stock_dir, "候选交易明细.csv"), index=False, encoding="utf-8-sig")
     if holding is not None and len(holding) > 0:
         holding.to_csv(os.path.join(stock_dir, "持仓过程.csv"), index=False, encoding="utf-8-sig")
     with open(os.path.join(stock_dir, "回测摘要.txt"), "w", encoding="utf-8") as target:
@@ -225,20 +224,40 @@ def main():
     parser.add_argument("--capital", type=float, default=20_000_000)
     parser.add_argument("--liquidity-limit", type=float, default=0.01)
     parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument(
+        "--portfolio-mode", choices=("shared", "independent"), default="shared",
+        help="shared=统一交易核心+共享账户；independent=旧版独立账户对照",
+    )
     parser.add_argument("--output", help="同时保存JSON文件")
     args = parser.parse_args()
 
     config_dir = os.path.abspath(args.config)
     stocks = 读取股票列表(args.stocks)
-    tasks = [
-        (stock, config_dir, args.start, args.end, args.capital, args.liquidity_limit)
-        for stock in stocks
-    ]
-    if args.workers > 1:
-        with ProcessPoolExecutor(max_workers=args.workers) as executor:
-            details = list(executor.map(执行单股任务, tasks))
+    if args.portfolio_mode == "shared":
+        from 组合回测.统一多股执行器 import 运行共享账户回测
+        with contextlib.redirect_stdout(io.StringIO()):
+            shared = 运行共享账户回测(
+                stocks, args.start, args.end, args.capital, config_dir,
+                liquidity_limit=args.liquidity_limit,
+            )
+        details = [
+            单股摘要(result, args.start, args.end)
+            for result in shared["股票结果"]
+        ] + shared.get("错误", [])
+        account_snapshot = shared["账户"].快照()
+        portfolio_curve = shared["组合权益曲线"]
     else:
-        details = [执行单股任务(task) for task in tasks]
+        tasks = [
+            (stock, config_dir, args.start, args.end, args.capital, args.liquidity_limit)
+            for stock in stocks
+        ]
+        if args.workers > 1:
+            with ProcessPoolExecutor(max_workers=args.workers) as executor:
+                details = list(executor.map(执行单股任务, tasks))
+        else:
+            details = [执行单股任务(task) for task in tasks]
+        account_snapshot = {}
+        portfolio_curve = []
 
     module_manager = 模块开关管理器(config_dir)
     report = {
@@ -257,6 +276,9 @@ def main():
         "初始资金": args.capital,
         "流动性上限比例": args.liquidity_limit,
         "并行进程数": args.workers,
+        "资金模式": "共享账户" if args.portfolio_mode == "shared" else "等额独立账户",
+        "共享账户快照": account_snapshot,
+        "组合权益曲线": portfolio_curve,
         "汇总": 汇总结果(details),
         "股票明细": details,
     }

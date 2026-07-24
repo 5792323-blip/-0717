@@ -100,20 +100,44 @@ def test_apply_form_updates_snapshot(tmp_path):
     assert core["核心模块"]["下一根执行"]["启用"] is False
 
 
+def test_grid_initial_ratio_applies_to_non_full_position_first_request(tmp_path):
+    snapshot = tmp_path / "config"
+    shutil.copytree(CONFIG, snapshot)
+    form = 构建默认表单()
+    form.update({
+        "single_full_position_mode": False,
+        "single_capital": 10000000,
+        "single_base_position": 10000000,
+        "single_grid_initial_ratio": 0.1,
+        "single_switch_扩展因子_grid_addon": True,
+    })
+
+    应用表单到配置(snapshot, 提取模式配置(form, "single"))
+
+    positions = yaml.safe_load((snapshot / "仓位配置.yaml").read_text(encoding="utf-8"))
+    parameters = yaml.safe_load((snapshot / "参数配置.yaml").read_text(encoding="utf-8"))
+    assert positions["基准仓位"]["基础单只金额"] == 1000000
+    assert parameters["仓位参数"]["基础单只金额"] == 1000000
+
+
 def test_home_page_renders():
     client = 应用.test_client()
     response = client.get("/")
     assert response.status_code == 200
     body = response.get_data(as_text=True)
     assert "回测主页面" in body
-    assert "单股模式" in body
-    assert "多股模式" in body
+    assert "单股账户" in body
+    assert "多股账户" in body
     assert "运行单股回测" in body
     assert "运行多股回测" in body
-    assert "回测范围、资金与基础指标" in body
-    assert "资金 · 日期 · 仓位 · RSI · ATR" in body
+    assert "公共策略配置" in body
+    assert "公共指标、成交与网格参数" in body
     assert "严格预挂单下，1.001 代表成交价上限上浮 0.1%" in body
-    assert "updateSingleEffectiveConfig" in body
+    assert "updateEffectiveConfig" in body
+    assert "有效订单金额预览" in body
+    assert "策略单笔请求金额" in body
+    assert "单只股票累计仓位上限比例" in body
+    assert "组合总持仓上限比例" in body
     assert "RSI价格源" in body
     assert "收盘确认后次根开盘" in body
     assert "过滤因子" in body
@@ -134,8 +158,9 @@ def test_home_page_renders():
     assert "RSI阈值守仓（暂缓ATR）" in body
     assert "RSI中性区过滤" in body
     assert "RSI区间对齐过滤" in body
-    assert "/report/" in body
-    assert "/output/K线回放_600519.html" not in body
+    # 首页在没有历史回测快照时不会生成 /report/<token>。这里只验证
+    # 报告容器存在，避免测试结果依赖开发机上是否残留旧报告。
+    assert 'id="viewer-report"' in body
     assert "分批止盈第三档" in body
     assert "下一根K线执行" in body
     assert 'name="single_switch_扩展因子_xgboost_trend"' in body
@@ -162,7 +187,7 @@ def test_output_urls_are_generated_from_stock_code():
     assert 获取多股票回放地址() == "/output/多股票K线回放.html"
 
 
-def test_mode_config_isolated():
+def test_modes_share_strategy_but_keep_account_configuration_isolated():
     form = 构建默认表单()
     form["single_capital"] = 111
     form["multi_capital"] = 222
@@ -173,7 +198,27 @@ def test_mode_config_isolated():
     assert single["capital"] == 111
     assert multi["capital"] == 222
     assert single["switch_核心模块_same_bar_entry"] is True
-    assert multi["switch_核心模块_same_bar_entry"] is False
+    assert multi["switch_核心模块_same_bar_entry"] is True
+
+
+def test_normalized_form_mirrors_public_strategy_without_copying_accounts():
+    normalized = 规范化表单({
+        "ui_mode": "single",
+        "single_capital": "12000000",
+        "multi_capital": "8000000",
+        "single_rsi_period": "9",
+        "single_grid_mode": "linear",
+        "single_switch_买入规则_rsi_cross_20": "on",
+        "single_param_买入规则_rsi_cross_20_单笔买入上限": "750000",
+    })
+
+    assert normalized["single_capital"] == 12000000
+    assert normalized["multi_capital"] == 8000000
+    assert normalized["single_rsi_period"] == normalized["multi_rsi_period"] == 9
+    assert normalized["single_grid_mode"] == normalized["multi_grid_mode"] == "linear"
+    assert normalized["single_switch_买入规则_rsi_cross_20"] is True
+    assert normalized["multi_switch_买入规则_rsi_cross_20"] is True
+    assert normalized["multi_param_买入规则_rsi_cross_20_单笔买入上限"] == 750000
 
 
 def test_single_full_position_mode_passes_runtime_flag(tmp_path):
@@ -209,7 +254,7 @@ def test_precheck_blocks_zero_trade_risk():
     form["single_full_position_mode"] = False
     form["single_max_single_ratio"] = 0.0001
     issues = 预检查无成交风险(form, "single")
-    assert any("最大单只比例过低" in item for item in issues)
+    assert any("单只股票累计仓位上限比例过低" in item for item in issues)
 
 
 def test_precheck_allows_default_single_setup():
@@ -225,7 +270,8 @@ def test_workbench_configuration_survives_reload(tmp_path):
         保存最近工作台配置(form)
         restored = 构建工作台表单()
     assert restored["single_switch_扩展因子_grid_addon"] is True
-    assert restored["multi_switch_过滤因子_index_trend_filter"] is True
+    assert restored["multi_switch_扩展因子_grid_addon"] is True
+    assert restored["multi_switch_过滤因子_index_trend_filter"] is False
 
 
 def test_unchecked_strategy_switch_is_saved_as_disabled():

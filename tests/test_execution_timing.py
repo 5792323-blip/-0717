@@ -266,13 +266,37 @@ def test_gap_up_uses_open_price_and_non_breakout_does_not_buy():
     assert len(calls) == 1
     assert calls[0]["哨兵价"] == 105.0
     assert executor.哨兵价当前 == 105.0
-    assert executor.哨兵价已形成 is False
+    assert executor.哨兵价已形成 is True
+    assert executor.哨兵价跟踪启用 is True
+    assert executor.哨兵价可执行 is False
+    assert executor.最近成交哨兵价 == 105.0
 
     calls.clear()
     executor.本根决策 = {"买入信号": [], "过滤检查": [], "决策记录": {}, "动作原因": ""}
     executor._检查买入(make_bar(前复权_最高=104.99), 21)
     assert calls == []
 
+
+def test_consumed_sentinel_keeps_tracking_and_rearms_only_after_raise():
+    executor = make_executor()
+    executor.买入时机模式 = "precomputed_stop_entry"
+    executor.核心模块 = {"哨兵价突破后上移": {"启用": True}}
+    executor.模块开关 = None
+    executor.哨兵价当前 = 105.0
+    executor.哨兵价已形成 = True
+    executor.哨兵价跟踪启用 = True
+    executor._消费当前哨兵价(105.0)
+
+    executor._更新哨兵价跟踪(make_bar(前复权_最高=105.0))
+    assert executor.哨兵价当前 == 105.0
+    assert executor.哨兵价可执行 is False
+
+    executor.RSI反推价当前 = 103.0
+    executor._更新哨兵价跟踪(make_bar(前复权_最高=108.0))
+    assert executor.哨兵价当前 == 108.0
+    assert executor.哨兵价可执行 is True
+    assert executor.哨兵价已消费价格 == 105.0
+    assert executor.最近成交哨兵价 == 105.0
 
 def test_single_lot_overrides_signal_amount_limit():
     executor = make_executor()

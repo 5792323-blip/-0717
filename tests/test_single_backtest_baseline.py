@@ -1,0 +1,56 @@
+import hashlib
+import os
+
+import pytest
+
+from 回测引擎.backtest_engine import 跑回测
+
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG = os.path.join(ROOT, "1_策略配置")
+DATA = os.path.join(ROOT, "数据模块", "raw", "600519_双价格合并.pkl")
+
+
+def _frame_digest(frame, columns):
+    payload = frame[columns].fillna("").to_csv(
+        index=False, float_format="%.10f"
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+@pytest.mark.skipif(not os.path.isfile(DATA), reason="缺少600519本地行情基线")
+def test_verified_single_backtest_with_persistent_sentinel_is_stable():
+    """锁定哨兵生命周期修复后的单股交易和逐K线状态。"""
+    result = 跑回测(
+        "600519",
+        开始日期="2020-01-01",
+        结束日期="2023-12-31",
+        初始资金=20_000_000,
+        配置目录=CONFIG,
+        运行参数={"流动性上限比例": 0.01, "单股全仓模式": True},
+        静默=True,
+    )
+
+    trades = result["交易明细"]
+    process = result["持仓过程"]
+    trade_columns = [
+        "时间", "类型", "买入价", "卖出价", "成交数量", "交易费用",
+        "信号类型", "卖出原因", "网格级别",
+    ]
+    process_columns = [
+        "K线索引", "哨兵价", "本根触发哨兵价", "哨兵价跟踪启用",
+        "哨兵价可执行", "哨兵价已消费价格", "最近成交哨兵价",
+        "最终动作", "当前现金", "持仓市值", "权益", "持仓数量",
+    ]
+
+    assert result["买入次数"] == 157
+    assert result["卖出次数"] == 155
+    assert result["最终现金"] == pytest.approx(19_942_757.615472175, abs=1e-6)
+    assert result["最终权益"] == pytest.approx(20_115_357.615472175, abs=1e-6)
+    assert result["总收益率"] == pytest.approx(0.5767880773608759, abs=1e-9)
+    assert _frame_digest(trades, trade_columns) == (
+        "a48e7ebaf7ff81ef8f64ac913fa68947bf8f6a17cee1175d0dcd714574f58fb7"
+    )
+    assert _frame_digest(process, process_columns) == (
+        "f32ef644872e0a6a8e0f0b062e4f8599c006c4c7f664a116eaad7729da0c1bc4"
+    )

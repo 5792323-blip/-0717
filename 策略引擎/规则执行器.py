@@ -24,6 +24,9 @@ from 买入执行模块.rsi_reverse_price import (
     计算Wilder上涨反推价,
     计算WilderRSI,
 )
+from 策略引擎.交易账户 import 单股账户
+
+
 class 规则执行器:
     """
     规则执行器
@@ -38,7 +41,111 @@ class 规则执行器:
       ⑥ 记录本根K线的状态
     """
     
-    def __init__(self, 配置目录, 运行参数=None):
+    @property
+    def current_sentinel_price(self):
+        return self.哨兵价当前
+
+    @current_sentinel_price.setter
+    def current_sentinel_price(self, value):
+        self.哨兵价当前 = value
+
+    @property
+    def sentinel_tracking_enabled(self):
+        return getattr(self, '哨兵价跟踪启用', False)
+
+    @sentinel_tracking_enabled.setter
+    def sentinel_tracking_enabled(self, value):
+        self.哨兵价跟踪启用 = bool(value)
+
+    @property
+    def sentinel_consumed_price(self):
+        return getattr(self, '哨兵价已消费价格', None)
+
+    @sentinel_consumed_price.setter
+    def sentinel_consumed_price(self, value):
+        self.哨兵价已消费价格 = value
+
+    @property
+    def last_trade_sentinel_price(self):
+        return getattr(self, '最近成交哨兵价', None)
+
+    @last_trade_sentinel_price.setter
+    def last_trade_sentinel_price(self, value):
+        self.最近成交哨兵价 = value
+
+    @property
+    def sentinel_type(self):
+        return self.哨兵价形成类型
+
+    @sentinel_type.setter
+    def sentinel_type(self, value):
+        self.哨兵价形成类型 = value
+
+    @property
+    def 当前现金(self):
+        if hasattr(self, '账户视图'):
+            return self.账户视图.现金
+        return getattr(self, '_当前现金', 0.0)
+
+    @当前现金.setter
+    def 当前现金(self, value):
+        if hasattr(self, '账户视图'):
+            self.账户视图.现金 = value
+        else:
+            self._当前现金 = float(value)
+
+    @property
+    def 当前持仓(self):
+        if hasattr(self, '账户视图'):
+            return self.账户视图.持仓
+        return getattr(self, '_当前持仓', {})
+
+    @当前持仓.setter
+    def 当前持仓(self, value):
+        if hasattr(self, '账户视图'):
+            self.账户.持仓.clear()
+            self.账户.持仓.update(dict(value or {}))
+        else:
+            self._当前持仓 = dict(value or {})
+
+    def _账户已达到最大持仓数(self, 股票代码):
+        if hasattr(self, '账户视图'):
+            return self.账户视图.已达到最大持仓数(self.最大总持仓数)
+        return (
+            len(self.当前持仓) >= self.最大总持仓数
+            and 股票代码 not in self.当前持仓
+        )
+
+    def _计算账户结构性可用金额(self, 当前估值价):
+        if hasattr(self, '账户视图'):
+            return self.账户视图.计算结构性可用金额(
+                当前估值价,
+                self.最大单只比例,
+                self.最大总仓位比例,
+                self.现金底线比例,
+            )
+        当前持仓市值 = sum(
+            p.get('股数', 0) * 当前估值价 for p in self.当前持仓.values()
+        )
+        当前权益 = self.当前现金 + 当前持仓市值
+        单股上限金额 = 当前权益 * self.最大单只比例
+        总仓位剩余 = max(0.0, 当前权益 * self.最大总仓位比例 - 当前持仓市值)
+        现金可用金额 = max(0.0, self.当前现金 - 当前权益 * self.现金底线比例)
+        return min(单股上限金额, 总仓位剩余, 现金可用金额), {
+            "当前权益": 当前权益,
+            "持仓市值": 当前持仓市值,
+            "单只结构性上限": 单股上限金额,
+            "总仓位剩余": 总仓位剩余,
+            "现金可用金额": 现金可用金额,
+        }
+
+    def _记录账户审批(self, **row):
+        if not getattr(self, '运行参数', {}).get('共享账户模式', False):
+            return
+        if hasattr(self, '账户视图'):
+            self.账户视图.记录审批(**row)
+
+    def __init__(self, 配置目录, 运行参数=None, 账户=None, 股票代码="600519"):
         """
         初始化规则执行器
 
@@ -59,9 +166,11 @@ class 规则执行器:
         self.仓位配置 = self._加载yaml('仓位配置.yaml')
         self.参数配置 = self._加载yaml('参数配置.yaml')
         
-        # 当前状态
-        self.当前持仓 = {}           # {股票代码: 持仓信息}
-        self.当前现金 = self.仓位配置.get('基准仓位', {}).get('初始资金', 20000000)
+        # 账户只承载真实现金和持仓；策略、成交、费用与网格仍由本执行器
+        # 唯一计算。多股模式为每只股票注入同一共享账户的独立股票视图。
+        初始资金 = self.仓位配置.get('基准仓位', {}).get('初始资金', 20000000)
+        self.账户 = 账户 or 单股账户(初始资金)
+        self.账户视图 = self.账户.股票视图(股票代码)
         self.已买入K线数 = 0
         # LightGBM预测器
         try:
@@ -144,6 +253,10 @@ class 规则执行器:
         self.上一根突破基准价当前 = None
         self.最终买入触发价当前 = None
         self.哨兵价已形成 = False
+        self.哨兵价跟踪启用 = False
+        self.哨兵价可执行 = False
+        self.哨兵价已消费价格 = None
+        self.最近成交哨兵价 = None
         self.哨兵价形成类型 = None        
         self.哨兵价形成索引 = None
         self.哨兵价本根新形成 = False
@@ -181,7 +294,10 @@ class 规则执行器:
 
     def _更新哨兵价跟踪(self, K线数据):
         """在没有新哨兵价形成时，只允许旧哨兵价向上跟踪。"""
-        if not (self.哨兵价已形成 and self.哨兵价当前 is not None):
+        if not (
+            getattr(self, '哨兵价跟踪启用', self.哨兵价已形成)
+            and self.哨兵价当前 is not None
+        ):
             return
         if not self._核心模块启用('哨兵价突破后上移', True):
             return
@@ -206,10 +322,25 @@ class 规则执行器:
             self.哨兵价当前 = 新哨兵价
             self.最终买入触发价当前 = 新哨兵价
             self.上一根突破基准价当前 = 当前最高
+            最近成交价 = getattr(self, '最近成交哨兵价', None)
+            if 最近成交价 is None or 新哨兵价 > float(最近成交价):
+                self.哨兵价可执行 = True
             return
 
         self.哨兵价当前 = 当前最高
         self.最终买入触发价当前 = 当前最高
+        最近成交价 = getattr(self, '最近成交哨兵价', None)
+        if 最近成交价 is None or 当前最高 > float(最近成交价):
+            self.哨兵价可执行 = True
+
+    def _消费当前哨兵价(self, 成交哨兵价=None):
+        """成交只消费当前价格档位；哨兵数值和向上跟踪继续保留。"""
+        price = self.哨兵价当前 if 成交哨兵价 is None else 成交哨兵价
+        self.哨兵价已消费价格 = price
+        self.最近成交哨兵价 = price
+        self.哨兵价已形成 = self.哨兵价当前 is not None
+        self.哨兵价跟踪启用 = self.哨兵价当前 is not None
+        self.哨兵价可执行 = False
 
     def _加载yaml(self, 文件名):
         """加载YAML配置文件"""
@@ -595,6 +726,10 @@ class 规则执行器:
             哨兵价形成类型=self.哨兵价形成类型,
             哨兵价本根新形成=self.哨兵价本根新形成,
             哨兵价已确认可执行=getattr(self, '哨兵价已确认可执行', False),
+            哨兵价跟踪启用=getattr(self, '哨兵价跟踪启用', False),
+            哨兵价可执行=getattr(self, '哨兵价可执行', False),
+            哨兵价已消费价格=getattr(self, '哨兵价已消费价格', None),
+            最近成交哨兵价=getattr(self, '最近成交哨兵价', None),
             本根反推价=self.本根反推价,
             本根反推信号类型=self.本根反推信号类型,
             本根反推目标RSI=self.本根反推目标RSI,
@@ -657,6 +792,8 @@ class 规则执行器:
             self.最终买入触发价当前 = 候选['触发边界']
             self.哨兵价当前 = 候选['触发边界']
             self.哨兵价已形成 = True
+            self.哨兵价跟踪启用 = True
+            self.哨兵价可执行 = True
             self.哨兵价已确认可执行 = True
             self.哨兵价形成类型 = 信号类型
             self.哨兵价锁定信号类型 = 信号类型
@@ -681,8 +818,13 @@ class 规则执行器:
             return
         
         该股票代码 = K线数据.get('股票代码', '600519')
-        if len(self.当前持仓) >= self.最大总持仓数 and 该股票代码 not in self.当前持仓:
+        if self._账户已达到最大持仓数(该股票代码):
             self.本根决策["动作原因"] = "已达到最大持仓数（新股票被拦截）"
+            self._记录账户审批(
+                类型="买入", 结果="组合层拦截", 原因="达到最大持仓数量",
+                请求股数=0, 成交股数=0,
+                时间=str(getattr(K线数据, 'name', K线数据.get('完整时间', K线数据.get('日期', '')))),
+            )
             return
         # 网格模式下，普通 RSI 哨兵买入只负责首笔开仓。
         # 已有持仓后的后续买入必须经过网格回撤层（L1/L2...）和新的
@@ -703,6 +845,9 @@ class 规则执行器:
         
         if not self.哨兵价已形成 or self.哨兵价当前 is None:
             self.本根决策["动作原因"] = "尚未形成哨兵价"
+            return
+        if not getattr(self, '哨兵价可执行', self.哨兵价已形成):
+            self.本根决策["动作原因"] = "当前哨兵价档位已成交，继续跟踪上移"
             return
 
         # 过滤：哨兵价形成类型必须在已启用的买入规则中。
@@ -859,7 +1004,7 @@ class 规则执行器:
                 "RSI": K线数据.get('RSI_14', 当前RSI),
                 "确认索引": 当前索引,
             }
-            self.哨兵价已形成 = False
+            self.哨兵价可执行 = False
             self.本根决策["最终动作"] = "等待次根开盘买入"
             self.本根决策["动作原因"] = "收盘价确认突破，下一根K线开盘执行"
             self.本根决策["决策记录"]["阶段"] = "收盘确认"
@@ -873,9 +1018,7 @@ class 规则执行器:
                         建议仓位=self._本根扩展因子结果.get('建议仓位'))
         if 已买入:
             self.哨兵价锁定信号类型 = None
-            # Keep the last sentinel value for audit/replay display. The formed
-            # flag is cleared so the consumed order cannot trigger again.
-            self.哨兵价已形成 = False
+            self._消费当前哨兵价(有效触发价)
             self.RSI反推价当前 = None
             self.上一根突破基准价当前 = None
             self.最终买入触发价当前 = None
@@ -911,6 +1054,7 @@ class 规则执行器:
             建议仓位=待买.get('建议仓位'), 按开盘成交=True,
         )
         if 已买入:
+            self._消费当前哨兵价(待买['哨兵价'])
             self.本根决策["最终动作"] = "买入"
             self.本根决策["动作原因"] = "上一根收盘确认，本根开盘成交"
             self.本根决策["决策记录"]["阶段"] = "次根开盘成交"
@@ -1043,14 +1187,7 @@ class 规则执行器:
         if 单笔上限 is not None and 指定股数 is None:
             目标金额 = min(目标金额, float(单笔上限))
         当前估值价 = 不复权开盘
-        当前持仓市值 = sum(
-            p.get('股数', 0) * 当前估值价 for p in self.当前持仓.values()
-        )
-        当前权益 = self.当前现金 + 当前持仓市值
-        单股上限金额 = 当前权益 * self.最大单只比例
-        总仓位剩余 = max(0.0, 当前权益 * self.最大总仓位比例 - 当前持仓市值)
-        现金可用金额 = max(0.0, self.当前现金 - 当前权益 * self.现金底线比例)
-        结构性可用金额 = min(单股上限金额, 总仓位剩余, 现金可用金额)
+        结构性可用金额, 账户限制 = self._计算账户结构性可用金额(当前估值价)
         if getattr(self, '流动性上限比例', None) is not None:
             上一日成交额 = K线数据.get('_上一交易日成交额')
             if 上一日成交额 is not None and not pd.isna(上一日成交额) and float(上一日成交额) > 0:
@@ -1077,12 +1214,33 @@ class 规则执行器:
             买入金额上限 = 结构性可用金额
         else:
             买入金额上限 = min(max(10000, 目标金额), 结构性可用金额)
+        if 指定股数 is not None:
+            请求股数 = max(
+                最低交易单位,
+                int(float(指定股数) / 最低交易单位) * 最低交易单位,
+            )
+        else:
+            请求金额 = (
+                买入金额上限
+                if getattr(self, '单股全仓模式', False) and not 网格启用
+                else max(10000, 目标金额)
+            )
+            请求股数 = max(
+                最低交易单位,
+                int(请求金额 / 买入价 / 最低交易单位) * 最低交易单位,
+            )
         # 单股正式模型保留原有1万元结构性最低金额保护。
         # 多股等额资金池可能低于1万元，但只要仍能买入一手，不能把
         # 所有信号统一拦截；该分支只由多股回测运行参数显式开启。
         最低结构性金额 = 100.0 if getattr(self, '运行参数', {}).get('多股资金池模式', False) else 10000.0
         if not 网格加仓 and 结构性可用金额 < 最低结构性金额:
             self.本根决策["动作原因"] = "仓位限制或现金底线导致可买金额不足"
+            self._记录账户审批(
+                类型="买入", 结果="组合层拦截", 原因="仓位限制或现金底线",
+                请求股数=请求股数, 成交股数=0, 成交价=买入价,
+                账户限制=账户限制,
+                时间=str(getattr(K线数据, 'name', K线数据.get('完整时间', K线数据.get('日期', '')))),
+            )
             return False
         # 单笔信号上限不足一手时，仍按最低交易单位买入一手；
         # 结构性仓位和现金限制仍必须满足。
@@ -1097,8 +1255,10 @@ class 规则执行器:
             if 股数 < 最低交易单位 and 结构性可用金额 >= 一手金额:
                 股数 = 最低交易单位
         if 网格加仓:
-            买入金额上限 = float('inf')
-            预估现金上限 = float('inf')
+            # 网格的目标股数仍由统一网格状态机决定，但共享账户的现金、
+            # 单股和总仓位限制必须同样生效，不能出现组合现金为负。
+            买入金额上限 = 结构性可用金额
+            预估现金上限 = min(self.当前现金, 结构性可用金额)
         else:
             预估现金上限 = self.当前现金 if getattr(self, '单股全仓模式', False) else 结构性可用金额
         while 股数 >= 最低交易单位:
@@ -1123,6 +1283,12 @@ class 规则执行器:
 
         if 股数 < 最低交易单位:
             self.本根决策["动作原因"] = "可买数量不足一手"
+            self._记录账户审批(
+                类型="买入", 结果="组合层拦截", 原因="资金不足一手",
+                请求股数=请求股数, 成交股数=0, 成交价=买入价,
+                账户限制=账户限制,
+                时间=str(getattr(K线数据, 'name', K线数据.get('完整时间', K线数据.get('日期', '')))),
+            )
             return False
         
         if 实际金额总 > 预估现金上限:
@@ -1137,6 +1303,17 @@ class 规则执行器:
             self.本根决策["动作原因"] = (
                 f"单笔上限{买入金额上限:.2f}元不足一手，按最低一手成交"
             )
+        if (getattr(self, '运行参数', {}).get('共享账户模式', False)
+                and not getattr(self, '运行参数', {}).get('允许部分成交', True)
+                and 股数 < 请求股数):
+            self.本根决策["动作原因"] = "组合资金约束只能部分成交，但当前配置禁止部分成交"
+            self._记录账户审批(
+                类型="买入", 结果="组合层拦截", 原因="禁止部分成交",
+                请求股数=请求股数, 成交股数=0, 成交价=买入价,
+                账户限制=账户限制,
+                时间=str(getattr(K线数据, 'name', K线数据.get('完整时间', K线数据.get('日期', '')))),
+            )
+            return False
         
         # 记录持仓（支持加仓：同一股票再次买入视为增持，不覆盖原持仓）
         if 股票代码 in self.当前持仓:
@@ -1231,12 +1408,36 @@ class 规则执行器:
             "成交金额": 实际金额,
             "交易费用": 买入费用,
             "信号质量分": 信号质量,
+            "账户限制": 账户限制,
         })
         self.交易记录器.更新交易记录(
             self.交易记录器.买入序号, '买入',
             买入决策记录=self.本根决策.get('决策记录', {}),
             交易费用=买入费用,
             总成本=实际金额总,
+        )
+        限制名称 = min(
+            ("单只股票仓位", "总仓位", "现金底线"),
+            key=lambda name: {
+                "单只股票仓位": 账户限制.get("单只结构性上限", float('inf')),
+                "总仓位": 账户限制.get("总仓位剩余", float('inf')),
+                "现金底线": 账户限制.get("现金可用金额", float('inf')),
+            }[name],
+        )
+        self._记录账户审批(
+            类型="买入",
+            结果="实际成交",
+            审批状态="部分成交" if 股数 < 请求股数 else "全部成交",
+            原因=限制名称 if 股数 < 请求股数 else "账户批准",
+            请求股数=请求股数,
+            成交股数=股数,
+            成交价=买入价,
+            交易费用=买入费用,
+            成交净额=实际金额总,
+            网格层级=网格级别,
+            信号类型=信号类型 or self.哨兵价形成类型,
+            账户限制=账户限制,
+            时间=str(getattr(K线数据, 'name', K线数据.get('完整时间', K线数据.get('日期', '')))),
         )
         if not hasattr(self, '_本根已买入股票'):
             self._本根已买入股票 = set()
@@ -1357,6 +1558,8 @@ class 规则执行器:
                         self.哨兵价当前 = _候选['触发边界']
                         self.最终买入触发价当前 = self.哨兵价当前
                         self.哨兵价已形成 = True
+                        self.哨兵价跟踪启用 = True
+                        self.哨兵价可执行 = True
                         self.哨兵价已确认可执行 = True
                         self.哨兵价形成类型 = _上穿类型
                         self.哨兵价锁定信号类型 = _上穿类型
@@ -1942,6 +2145,13 @@ class 规则执行器:
         self.交易记录器.更新交易记录(
             self.交易记录器.买入序号, '买入',
             卖出决策记录=self.本根决策.get('决策记录', {}),
+        )
+        self._记录账户审批(
+            类型="卖出", 结果="实际成交", 原因=规则.get('说明', '卖出规则触发'),
+            请求股数=卖出股数, 成交股数=卖出股数, 成交价=卖出价,
+            交易费用=卖出费用, 成交净额=卖出净金额,
+            网格层级=int(持仓.get('网格_已加仓次数', 0) or 0),
+            时间=str(getattr(K线数据, 'name', K线数据.get('完整时间', K线数据.get('日期', '')))),
         )
         return True
     
