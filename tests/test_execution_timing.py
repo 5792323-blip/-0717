@@ -265,6 +265,8 @@ def test_gap_up_uses_open_price_and_non_breakout_does_not_buy():
                                 不复权_开盘=110.0, 不复权_最高=112.0), 20)
     assert len(calls) == 1
     assert calls[0]["哨兵价"] == 105.0
+    assert executor.哨兵价当前 == 105.0
+    assert executor.哨兵价已形成 is False
 
     calls.clear()
     executor.本根决策 = {"买入信号": [], "过滤检查": [], "决策记录": {}, "动作原因": ""}

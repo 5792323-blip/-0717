@@ -860,7 +860,6 @@ class 规则执行器:
                 "确认索引": 当前索引,
             }
             self.哨兵价已形成 = False
-            self.哨兵价当前 = None
             self.本根决策["最终动作"] = "等待次根开盘买入"
             self.本根决策["动作原因"] = "收盘价确认突破，下一根K线开盘执行"
             self.本根决策["决策记录"]["阶段"] = "收盘确认"
@@ -874,8 +873,9 @@ class 规则执行器:
                         建议仓位=self._本根扩展因子结果.get('建议仓位'))
         if 已买入:
             self.哨兵价锁定信号类型 = None
+            # Keep the last sentinel value for audit/replay display. The formed
+            # flag is cleared so the consumed order cannot trigger again.
             self.哨兵价已形成 = False
-            self.哨兵价当前 = None
             self.RSI反推价当前 = None
             self.上一根突破基准价当前 = None
             self.最终买入触发价当前 = None
