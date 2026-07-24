@@ -68,7 +68,7 @@ def _read_events(details):
 def replay(details, capital, max_positions=30, max_single_ratio=0.03,
            max_total_ratio=0.80, cash_floor=0.20, max_daily_buy_ratio=0.05,
            stock_capital=None, initial_position_ratio=0.25,
-           followup_position_ratio=0.25):
+           followup_position_ratio=0.25, candidate_expiry_bars=3):
     """Replay signals with portfolio-level cash competition and audit counters."""
     initial = float(capital)
     stock_capital = float(stock_capital or initial * max_single_ratio)
@@ -78,6 +78,7 @@ def replay(details, capital, max_positions=30, max_single_ratio=0.03,
     counters = defaultdict(int)
     curve = []
     audit_rows = []
+    pending_candidates = {}
     events, market_prices = _read_events(details)
     by_time = defaultdict(list)
     for event in events:
@@ -146,7 +147,7 @@ def replay(details, capital, max_positions=30, max_single_ratio=0.03,
     timeline = sorted(set(by_time).union(
         timestamp for series in market_prices.values() for timestamp in series
     ))
-    for timestamp in timeline:
+    for timeline_index, timestamp in enumerate(timeline):
         day_buy = 0.0
         for stock, series in market_prices.items():
             if timestamp in series:
@@ -174,7 +175,37 @@ def replay(details, capital, max_positions=30, max_single_ratio=0.03,
                                "请求股数": event["股数"], "成交股数": filled, "成交价": price,
                                "网格层级": event.get("网格级别", 0)})
 
-        buy_events = [item for item in by_time[timestamp] if item["类型"] == "买入"]
+        # A sell can free a slot before the current bar's candidate queue runs.
+        # Queued orders are intentionally carried forward, not re-created from
+        # the original signal, so their expiry remains deterministic.
+
+        expired = []
+        for stock, candidate in pending_candidates.items():
+            age = timeline_index - int(candidate.get("入队索引", timeline_index))
+            if age > int(candidate_expiry_bars):
+                expired.append(stock)
+                counters["候选队列过期"] += 1
+                audit_rows.append({
+                    "时间": timestamp.strftime("%Y-%m-%d %H:%M"),
+                    "股票代码": stock,
+                    "类型": "买入信号",
+                    "结果": "候选队列过期",
+                    "原因": "超过候选有效期",
+                    "请求股数": candidate["股数"],
+                    "成交股数": 0,
+                    "成交价": last_prices.get(stock, candidate["价格"]),
+                    "候选队列序号": candidate.get("入队序号", 0),
+                    "候选排序得分": priority_score(candidate),
+                })
+        for stock in expired:
+            pending_candidates.pop(stock, None)
+
+        buy_events = list(pending_candidates.values()) + [
+            item for item in by_time[timestamp] if item["类型"] == "买入"
+        ]
+        for event in buy_events:
+            if event.get("入队索引") is not None:
+                event["价格"] = last_prices.get(event["股票代码"], event["价格"])
         buy_events.sort(key=signal_priority, reverse=True)
         counters["候选队列信号数"] += len(buy_events)
         for queue_index, event in enumerate(buy_events, 1):
@@ -185,12 +216,19 @@ def replay(details, capital, max_positions=30, max_single_ratio=0.03,
             total_equity = equity()
             current_value = positions.get(stock, {}).get("shares", 0) * price
             if stock not in positions and len(positions) >= int(max_positions):
-                counters["最大持仓拦截"] += 1
-                audit_rows.append({"时间": timestamp.strftime("%Y-%m-%d %H:%M"), "股票代码": stock,
-                                   "类型": "买入信号", "结果": "组合层拦截", "原因": "达到最大持仓数",
-                                   "请求股数": event["股数"], "成交股数": 0, "成交价": price,
-                                   "网格层级": event.get("网格级别", 0), "候选队列序号": queue_index,
-                                   "候选排序得分": priority_score(event)})
+                if event.get("入队索引") is None:
+                    pending = dict(event)
+                    pending["入队索引"] = timeline_index
+                    pending["入队序号"] = queue_index
+                    pending_candidates[stock] = pending
+                    counters["候选队列进入"] += 1
+                    audit_rows.append({"时间": timestamp.strftime("%Y-%m-%d %H:%M"), "股票代码": stock,
+                                       "类型": "买入信号", "结果": "进入候选队列", "原因": "达到最大持仓数，等待名额",
+                                       "请求股数": event["股数"], "成交股数": 0, "成交价": price,
+                                       "网格层级": event.get("网格级别", 0), "候选队列序号": queue_index,
+                                       "候选排序得分": priority_score(event)})
+                else:
+                    counters["最大持仓拦截"] += 1
                 continue
             daily_limit = total_equity * float(max_daily_buy_ratio)
             if day_buy >= daily_limit:
@@ -243,6 +281,9 @@ def replay(details, capital, max_positions=30, max_single_ratio=0.03,
             position["last_price"] = price
             day_buy += total_cost
             counters["买入成交"] += 1
+            pending_candidates.pop(stock, None)
+            if event.get("入队索引") is not None:
+                counters["候选队列成交"] += 1
             level = int(position.get("买入层数", 0))
             position["买入层数"] = level + 1
             audit_rows.append({"时间": timestamp.strftime("%Y-%m-%d %H:%M"), "股票代码": stock,
