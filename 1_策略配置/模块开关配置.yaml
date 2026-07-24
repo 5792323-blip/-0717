@@ -1,0 +1,67 @@
+版本: module-switch-v1
+说明: "中央开关是回测的权威启用状态；原有YAML保留参数和向后兼容。"
+
+模块类别:
+  核心模块:
+    reverse_price: {名称: 反推价计算, 启用: true, 状态: 完成}
+    sentinel_build: {名称: 哨兵价形成, 启用: true, 状态: 完成}
+    sentinel_breakout: {名称: 哨兵价突破成交, 启用: true, 状态: 完成}
+    sentinel_trailing: {名称: 哨兵价突破后上移, 启用: true, 状态: 完成}
+    same_bar_entry: {名称: 旧版本根收盘回填成交, 启用: false, 状态: 完成}
+
+  买入规则:
+    rsi_cross_20: {名称: RSI上穿20, 启用: true, 状态: 完成, 模块: 5_买入规则.rsi_cross_20}
+    rsi_cross_30: {名称: RSI上穿30, 启用: true, 状态: 完成, 模块: 5_买入规则.rsi_cross_30}
+    rsi_cross_ma: {名称: RSI上穿均线, 启用: true, 状态: 完成, 模块: 5_买入规则.rsi_cross_ma}
+    rsi_cross_70: {名称: RSI上穿70, 启用: true, 状态: 完成, 模块: 5_买入规则.rsi_cross_70}
+
+  过滤因子:
+    index_trend_filter: {名称: 沪深300长期趋势, 启用: false, 状态: 实验, 模块: 8_过滤因子.index_trend_filter}
+    volume_spike_filter: {名称: 上一日成交额确认, 启用: false, 状态: 实验, 模块: 8_过滤因子.volume_spike_filter}
+    market_regime_filter: {名称: 市场状态过滤, 启用: false, 状态: 实验, 模块: 8_过滤因子.market_regime_filter}
+    volatility_regime_filter: {名称: 波动率状态过滤, 启用: false, 状态: 实验, 模块: 8_过滤因子.volatility_regime_filter}
+    alpha_composite_filter: {名称: IC复合扩展因子, 启用: false, 状态: 实验, 模块: 8_过滤因子.alpha_composite_filter}
+    ma_direction_filter: {名称: MA方向过滤, 启用: false, 状态: 实验, 模块: 8_过滤因子.ma_direction_filter}
+    divergence_filter: {名称: RSI背离过滤, 启用: false, 状态: 实验, 模块: 8_过滤因子.divergence_filter}
+    rsi_ma_filter: {名称: RSI_MA假信号过滤, 启用: true, 状态: 完成, 模块: 8_过滤因子.rsi_ma_filter}
+    quality_score_filter: {名称: 信号质量分过滤, 启用: false, 状态: 实验, 模块: 8_过滤因子.quality_score_filter}
+    consecutive_loss_filter: {名称: 连续亏损冷却, 启用: false, 状态: 实验, 模块: 8_过滤因子.consecutive_loss_filter}
+    rsi_position_filter: {名称: RSI位置过滤, 启用: false, 状态: 实验, 模块: 8_过滤因子.rsi_position_filter}
+    rsi_neutral_zone_filter: {名称: RSI中性区过滤, 启用: false, 状态: 实验, 模块: 8_过滤因子.rsi_neutral_zone_filter}
+    rsi_band_alignment_filter: {名称: RSI区间对齐过滤, 启用: false, 状态: 实验, 模块: 8_过滤因子.rsi_band_alignment_filter}
+
+  卖出规则:
+    stagnation_exit: {名称: 无效交易退出, 启用: false, 状态: 实验, 模块: 6_卖出规则.stagnation_exit}
+    take_profit: {名称: 分批止盈, 启用: false, 状态: 实验, 模块: 6_卖出规则.take_profit}
+    profit_8_exit: {名称: 盈利8%平仓, 启用: false, 状态: 完成, 模块: 6_卖出规则.profit_8_exit}
+    tb_rsi_low_exit: {名称: TB最低价RSI下穿卖出, 启用: false, 状态: 实验, 模块: 6_卖出规则.tb_rsi_low_exit}
+    stop_loss: {名称: 硬止损, 启用: false, 状态: 实验, 模块: 6_卖出规则.stop_loss}
+    rsi_guard: {名称: RSI站岗价止损, 启用: false, 状态: 实验, 模块: 6_卖出规则.rsi_guard}
+    rsi_threshold_hold: {名称: RSI阈值守仓, 启用: false, 状态: 完成, 模块: 6_卖出规则.rsi_threshold_hold}
+    momentum_exit: {名称: 动能衰竭退出, 启用: false, 状态: 实验, 模块: 6_卖出规则.momentum_exit}
+    time_exit: {名称: 时间退出, 启用: false, 状态: 实验, 模块: 6_卖出规则.time_exit}
+    atr_trailing: {名称: ATR跟踪退出, 启用: true, 状态: 完成, 模块: 6_卖出规则.atr_trailing}
+    atr_take_profit: {名称: ATR跟踪止盈（仅盈利触发）, 启用: false, 状态: 完成, 模块: 6_卖出规则.atr_take_profit}
+    divergence_fix: {名称: 背离修正卖出, 启用: false, 状态: 实验, 模块: 6_卖出规则.divergence_fix}
+
+  扩展因子:
+    market_state: {名称: 大盘状态, 启用: false, 状态: 实验, 模块: 因子模块.market_state}
+    rsi_ma_filter: {名称: RSI_MA因子, 启用: false, 状态: 实验, 模块: 因子模块.rsi_ma_filter}
+    divergence: {名称: 背离因子, 启用: false, 状态: 实验, 模块: 因子模块.divergence}
+    ma_direction: {名称: MA方向因子, 启用: false, 状态: 实验, 模块: 因子模块.ma_direction}
+    entry_timing: {名称: K线动量入场, 启用: false, 状态: 实验, 模块: 因子模块.entry_timing}
+    signal_scorer: {名称: 信号质量评分, 启用: false, 状态: 实验, 模块: 因子模块.signal_scorer}
+    momentum_exit: {名称: 动能退出因子, 启用: false, 状态: 实验, 模块: 因子模块.momentum_exit}
+    take_profit: {名称: 止盈因子, 启用: false, 状态: 实验, 模块: 因子模块.take_profit}
+    position_sizing: {名称: 动态仓位, 启用: false, 状态: 实验, 模块: 因子模块.position_sizing}
+    total_control: {名称: 总仓位控制, 启用: false, 状态: 实验, 模块: 因子模块.total_control}
+    grid_addon: {名称: 网格加仓, 启用: true, 状态: 实验, 模块: 因子模块.grid_addon}
+    volatility_classifier: {名称: 波动率分类器, 启用: false, 状态: 实验, 模块: 因子模块.波动率分类器}
+    xgboost_trend: {名称: XGBoost趋势, 启用: false, 状态: 未就绪, 模块: 因子模块.xgboost_trend}
+    randomforest_market: {名称: RandomForest大盘, 启用: false, 状态: 未就绪, 模块: 因子模块.randomforest_market}
+    committee_vote: {名称: 委员会投票, 启用: false, 状态: 未就绪, 模块: 因子模块.committee_vote}
+    ml_entry_timing: {名称: ML入场时机, 启用: false, 状态: 未就绪, 模块: 因子模块.ml_entry_timing}
+    ml_fake_drop: {名称: ML假跌判断, 启用: false, 状态: 未就绪, 模块: 因子模块.ml_fake_drop}
+
+  组合模块:
+    cross_sectional_reversal: {名称: 20日反转Top5, 启用: false, 状态: 实验, 模块: 组合回测.横截面组合}

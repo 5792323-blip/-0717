@@ -1,0 +1,2 @@
+optuna>=4.0,<5
+alphalens-reloaded>=0.4.5,<0.5
