@@ -10,6 +10,7 @@ import os
 import shutil
 import socket
 import sys
+import threading
 import uuid
 import webbrowser
 from collections import Counter
@@ -20,7 +21,7 @@ sys.path.insert(0, 项目根目录)
 
 import yaml
 import pandas as pd
-from flask import Flask, Response, render_template_string, request, send_from_directory, url_for
+from flask import Flask, Response, jsonify, render_template_string, request, send_from_directory, url_for
 
 from 回测引擎.backtest_engine import 跑回测, 保存结果
 from 回测引擎.report_generator import 生成报告
@@ -42,7 +43,65 @@ from 组合回测.统一多股执行器 import 运行共享账户回测
 应用 = Flask(__name__)
 最近报告 = {"token": None, "path": None, "run_dir": None}
 最近多股报告 = {"token": None, "path": None, "run_dir": None}
+回测进度锁 = threading.Lock()
+回测进度 = {
+    "task_id": None,
+    "status": "idle",
+    "mode": None,
+    "phase": "等待回测",
+    "completed": 0,
+    "total": 0,
+    "unit": "股票",
+    "trades": 0,
+    "message": "",
+    "error": False,
+}
 沪深300列表路径 = os.path.join(项目根目录, "数据模块", "hs300_list.txt")
+
+
+def 读取回测进度():
+    with 回测进度锁:
+        return copy.deepcopy(回测进度)
+
+
+def _回测进度回调(task_id, **changes):
+    with 回测进度锁:
+        if 回测进度.get("task_id") == task_id:
+            回测进度.update(changes)
+
+
+def _后台执行回测(form, mode, task_id):
+    callback = lambda **changes: _回测进度回调(task_id, **changes)
+    try:
+        if mode == "multi":
+            result = 运行多股回测(form, progress=callback)
+        else:
+            result = 运行交互回测(form, progress=callback)
+        _回测进度回调(
+            task_id,
+            status="completed",
+            phase="已完成",
+            completed=读取回测进度().get("total", 1),
+            message=result.get("status", "回测完成"),
+            result_url=result.get("report_url") or result.get("multi_report_url"),
+        )
+    except Exception as error:  # pragma: no cover - 依赖真实数据的后台异常
+        _回测进度回调(task_id, status="failed", phase="运行失败", error=True, message=str(error))
+
+
+def 启动后台回测(form, mode):
+    with 回测进度锁:
+        if 回测进度.get("status") == "running":
+            return None
+        task_id = uuid.uuid4().hex
+        回测进度.clear()
+        回测进度.update({
+            "task_id": task_id, "status": "running", "mode": mode,
+            "phase": "准备回测", "completed": 0, "total": 0,
+            "unit": "股票", "trades": 0, "message": "正在启动回测", "error": False,
+        })
+    threading.Thread(target=_后台执行回测, args=(copy.deepcopy(form), mode, task_id), daemon=True).start()
+    return task_id
 
 
 模块显示顺序 = {
@@ -438,6 +497,14 @@ from 组合回测.统一多股执行器 import 运行共享账户回测
       align-items: center;
       justify-content: space-between;
     }
+    .progress-card { display: none; }
+    .progress-card.active { display: block; }
+    .progress-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+    .progress-title { font-weight: 700; }
+    .progress-detail { color: var(--muted); font-size: 12px; }
+    .progress-track { height: 10px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: #e7e1d7; }
+    .progress-bar { width: 0%; height: 100%; border-radius: inherit; background: var(--accent); transition: width .3s ease; }
+    .progress-meta { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; color: var(--muted); font-size: 12px; }
     .pill {
       display: inline-flex;
       align-items: center;
@@ -1026,6 +1093,14 @@ from 组合回测.统一多股执行器 import 运行共享账户回测
         <a class="pill" href="{{ report_url }}" target="_blank">单独打开报告</a>
         {% endif %}
       </div>
+      <div id="backtestProgress" class="panel result-card progress-card" aria-live="polite">
+        <div class="progress-head">
+          <span id="progressTitle" class="progress-title">回测进度</span>
+          <span id="progressDetail" class="progress-detail">等待回测</span>
+        </div>
+        <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+        <div class="progress-meta"><span id="progressCount">0 / 0</span><span id="progressTrades">成交 0 笔</span></div>
+      </div>
 
       <div class="panel toolbar">
         <div class="toolbar-left">
@@ -1209,6 +1284,20 @@ from 组合回测.统一多股执行器 import 运行共享账户回测
         else target.value = source.value;
       });
     }
+    function setEntryTiming(prefix, timing) {
+      const select = field(`${prefix}_entry_timing`);
+      const same = field(`${prefix}_switch_核心模块_same_bar_entry`);
+      const next = field(`${prefix}_switch_核心模块_next_bar_entry`);
+      if (select) select.value = timing;
+      if (same) same.checked = timing === 'same_bar_entry';
+      if (next) next.checked = timing === 'precomputed_stop_entry';
+    }
+    function syncEntryTimingFromCore(prefix, changedName) {
+      const changed = field(changedName);
+      if (!changed || !changed.checked) return;
+      setEntryTiming(prefix, changedName.endsWith('same_bar_entry')
+        ? 'same_bar_entry' : 'precomputed_stop_entry');
+    }
     function money(value) {
       const number = Number(value || 0);
       return Number.isFinite(number) ? new Intl.NumberFormat('zh-CN', {maximumFractionDigits: 0}).format(number) : '--';
@@ -1343,7 +1432,15 @@ from 组合回测.统一多股执行器 import 运行共享账户回测
     modeTabs.forEach(tab => tab.addEventListener('click', () => showMode(tab.dataset.modeTab)));
     document.querySelectorAll('[name^="single_"]').forEach(node => {
       node.addEventListener('input', () => { syncPublicStrategy(); updateEffectiveConfig(); });
-      node.addEventListener('change', () => { syncPublicStrategy(); showMode(uiMode.value); });
+      node.addEventListener('change', () => {
+        if (node.name === 'single_entry_timing') setEntryTiming('single', node.value);
+        if (node.name.includes('switch_核心模块_same_bar_entry')
+            || node.name.includes('switch_核心模块_next_bar_entry')) {
+          syncEntryTimingFromCore('single', node.name);
+        }
+        syncPublicStrategy();
+        showMode(uiMode.value);
+      });
     });
     document.querySelectorAll('[name^="multi_"]').forEach(node => {
       node.addEventListener('input', updateEffectiveConfig);
@@ -1376,6 +1473,40 @@ from 组合回测.统一多股执行器 import 运行共享账户回测
     document.querySelector('form.sidebar').addEventListener('submit', syncPublicStrategy);
     syncPublicStrategy();
     showMode(uiMode.value || 'multi');
+
+    const progressBox = document.getElementById('backtestProgress');
+    const progressInitial = {{ progress|tojson }};
+    let progressTimer = null;
+    function renderProgress(state) {
+      if (!progressBox || !state || state.status === 'idle') return;
+      progressBox.classList.add('active');
+      const total = Number(state.total || 0);
+      const completed = Number(state.completed || 0);
+      const percent = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
+      document.getElementById('progressTitle').textContent = state.status === 'failed' ? '回测失败' : state.status === 'completed' ? '回测完成' : '回测正在运行';
+      document.getElementById('progressDetail').textContent = `${state.phase || ''} · ${state.message || ''}`;
+      document.getElementById('progressBar').style.width = `${percent}%`;
+      document.getElementById('progressCount').textContent = total ? `${completed} / ${total} ${state.unit || ''}（${percent}%）` : '正在准备数据';
+      document.getElementById('progressTrades').textContent = `成交 ${Number(state.trades || 0).toLocaleString('zh-CN')} 笔`;
+    }
+    async function pollProgress() {
+      try {
+        const response = await fetch('/api/backtest-progress', {cache: 'no-store'});
+        const state = await response.json();
+        renderProgress(state);
+        if (state.status === 'completed' || state.status === 'failed') {
+          clearInterval(progressTimer);
+          if (state.status === 'completed') setTimeout(() => window.location.reload(), 800);
+        }
+      } catch (error) {
+        document.getElementById('progressDetail').textContent = '暂时无法读取进度，回测仍可能在后台运行';
+      }
+    }
+    renderProgress(progressInitial);
+    if (progressInitial && progressInitial.status === 'running') {
+      progressTimer = setInterval(pollProgress, 1000);
+      pollProgress();
+    }
   </script>
 </body>
 </html>
@@ -1861,6 +1992,10 @@ def 规范化表单(form_data):
     # browser form can override the safe strict-mode defaults above.
     for prefix in ("single", "multi"):
         if normalized[f"{prefix}_entry_timing"] == "precomputed_stop_entry":
+            if (normalized[f"{prefix}_switch_核心模块_same_bar_entry"]
+                    and not normalized[f"{prefix}_switch_核心模块_next_bar_entry"]):
+                normalized[f"{prefix}_entry_timing"] = "same_bar_entry"
+                continue
             normalized[f"{prefix}_switch_核心模块_same_bar_entry"] = False
             normalized[f"{prefix}_switch_核心模块_next_bar_entry"] = True
         elif normalized[f"{prefix}_entry_timing"] == "same_bar_entry":
@@ -2087,9 +2222,9 @@ def 应用表单到配置(config_dir, form):
         core["核心模块"]["哨兵价形成"]["启用"] = True
         core["核心模块"]["哨兵价突破成交"]["启用"] = True
         core["核心模块"]["哨兵价突破后上移"]["启用"] = True
-        switches["模块类别"]["核心模块"].setdefault("same_bar_entry", {"名称": "本根形成哨兵价后立即买入", "状态": "完成"})["启用"] = True
-        core["核心模块"]["本根形成立即成交"]["启用"] = True
-        parameters["技术指标参数"]["哨兵价本根形成立即买入"] = True
+        switches["模块类别"]["核心模块"].setdefault("same_bar_entry", {"名称": "本根形成哨兵价后立即买入", "状态": "完成"})["启用"] = False
+        core["核心模块"]["本根形成立即成交"]["启用"] = False
+        parameters["技术指标参数"]["哨兵价本根形成立即买入"] = False
         switches["模块类别"]["核心模块"].setdefault("next_bar_entry", {"名称": "下一根执行", "状态": "完成"})["启用"] = True
         core["核心模块"]["下一根执行"]["启用"] = True
     elif form.get("entry_timing") == "same_bar_entry":
@@ -2112,6 +2247,28 @@ def 应用表单到配置(config_dir, form):
     写入_yaml(switches_path, switches)
     写入_yaml(filters_path, filters)
     写入_yaml(factors_path, factors)
+    写入_yaml(core_path, core)
+
+
+def 保存入场时序到正式配置(form):
+    """只同步页面的入场时序，避免旧工作台快照覆盖其他正式策略开关。"""
+    parameters_path = os.path.join(正式配置目录, "参数配置.yaml")
+    switches_path = os.path.join(正式配置目录, "模块开关配置.yaml")
+    core_path = os.path.join(正式配置目录, "核心模块配置.yaml")
+    parameters = 读取_yaml(parameters_path)
+    switches = 读取_yaml(switches_path)
+    core = 读取_yaml(core_path)
+    timing = form.get("entry_timing", "precomputed_stop_entry")
+    same_bar = timing == "same_bar_entry"
+    next_bar = timing == "precomputed_stop_entry"
+    parameters["买入参数"]["买入时机模式"] = timing
+    parameters["技术指标参数"]["哨兵价本根形成立即买入"] = same_bar
+    switches["模块类别"]["核心模块"].setdefault("same_bar_entry", {})["启用"] = same_bar
+    switches["模块类别"]["核心模块"].setdefault("next_bar_entry", {})["启用"] = next_bar
+    core["核心模块"]["本根形成立即成交"]["启用"] = same_bar
+    core["核心模块"]["下一根执行"]["启用"] = next_bar
+    写入_yaml(parameters_path, parameters)
+    写入_yaml(switches_path, switches)
     写入_yaml(core_path, core)
 
 
@@ -2454,10 +2611,12 @@ def 初始化结果():
     }
 
 
-def 运行交互回测(form):
+def 运行交互回测(form, progress=None):
     form = 归一化单股满仓参数(提取模式配置(form, "single"))
     清理旧交互回测数据()
     stock = form["stock"]
+    if progress:
+        progress(phase="运行单股回测", completed=0, total=1, unit="股票", message=f"正在回测 {stock}")
     run_dir = 创建运行目录(stock)
     config_dir = 复制配置(run_dir)
     应用表单到配置(config_dir, form)
@@ -2483,6 +2642,8 @@ def 运行交互回测(form):
     buys = int(result.get("买入次数", 0))
     sells = int(result.get("卖出次数", 0))
     no_trade = buys == 0 and sells == 0
+    if progress:
+        progress(phase="已完成", completed=1, total=1, unit="股票", trades=buys + sells, message="单股回测完成")
     return {
         "status": (
             f"回测完成但无成交：{stock} · {form['start']} 到 {form['end']}"
@@ -2708,10 +2869,12 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
         target.write(page)
 
 
-def 运行多股回测(form):
+def 运行多股回测(form, progress=None):
     form = 提取模式配置(form, "multi")
     清理旧交互回测数据()
     stocks = 解析多股输入(form)
+    if progress:
+        progress(phase="准备多股回测", completed=0, total=len(stocks), unit="股票", trades=0, message=f"共 {len(stocks)} 只股票")
     run_dir = 创建运行目录("multi")
     config_dir = 复制配置(run_dir)
     应用表单到配置(config_dir, form)
@@ -2733,6 +2896,7 @@ def 运行多股回测(form):
             stocks, form["start"], form["end"], form["capital"], config_dir,
             liquidity_limit=form["liquidity_limit"],
             allow_partial_fill=form.get("allow_partial_fill", True),
+            progress_callback=progress,
         )
         details = []
         for result in shared_run["股票结果"]:
@@ -2750,21 +2914,44 @@ def 运行多股回测(form):
                 "回放文件": report_path,
             })
             details.append(item)
+            if progress:
+                progress(
+                    phase="整理单票结果", completed=len(details), total=len(stocks), unit="股票",
+                    trades=sum(int(row.get("买入次数", 0)) + int(row.get("卖出次数", 0)) for row in details),
+                    message=f"已完成 {stock}",
+                )
         details.extend(shared_run.get("错误", []))
     else:
-        details = [
-            执行多股任务((stock, config_dir, form["start"], form["end"], 每股资金, form["liquidity_limit"], stock_dirs[stock]))
-            for stock in stocks
-        ] if int(form["workers"]) <= 1 else None
-        if details is None:
+        if int(form["workers"]) <= 1:
+            details = []
+            for stock in stocks:
+                item = 执行多股任务((stock, config_dir, form["start"], form["end"], 每股资金, form["liquidity_limit"], stock_dirs[stock]))
+                details.append(item)
+                if progress:
+                    progress(
+                        phase="运行多股回测", completed=len(details), total=len(stocks), unit="股票",
+                        trades=sum(int(row.get("买入次数", 0)) + int(row.get("卖出次数", 0)) for row in details if "错误" not in row),
+                        message=f"已完成 {stock}",
+                    )
+        else:
             tasks = [(stock, config_dir, form["start"], form["end"], 每股资金, form["liquidity_limit"], stock_dirs[stock]) for stock in stocks]
             from concurrent.futures import ProcessPoolExecutor
             try:
                 with ProcessPoolExecutor(max_workers=int(form["workers"])) as executor:
-                    details = list(executor.map(执行多股任务, tasks))
+                    details = []
+                    for item in executor.map(执行多股任务, tasks):
+                        details.append(item)
+                        if progress:
+                            progress(
+                                phase="运行多股回测", completed=len(details), total=len(stocks), unit="股票",
+                                trades=sum(int(row.get("买入次数", 0)) + int(row.get("卖出次数", 0)) for row in details if "错误" not in row),
+                                message=f"已完成 {item.get('股票代码', '')}",
+                            )
             except Exception:
                 details = [执行多股任务(task) for task in tasks]
                 fallback_note = "并行进程池启动失败，已自动降级为顺序执行，所以这次会更慢一些。"
+                if progress:
+                    progress(phase="运行多股回测", completed=len(details), total=len(stocks), unit="股票", message=fallback_note)
     summary = 汇总多股结果(details)
     valid = [item for item in details if "错误" not in item]
     errors = [item for item in details if "错误" in item]
@@ -2982,6 +3169,9 @@ def 首页():
                 form = 统一公共策略表单(应用TB复刻参数(form, "single"), "single")
                 result["status"] = "已应用TB复刻参数：最高价RSI买入、TB同根成交对照、最低价RSI下穿卖出。请再点击运行单股回测。"
             elif request.form.get("save_config") == "1":
+                # 保存按钮的语义是保存公共策略与账户设置，不能只保存页面草稿；
+                # 否则下一次回测复制正式配置时仍会读到旧的执行时机。
+                保存入场时序到正式配置(提取模式配置(form, "single"))
                 saved = 保存最近工作台配置(form)
                 result["status"] = (
                     "公共策略与单股/多股账户设置已保存；刷新页面后仍会保留。"
@@ -3005,7 +3195,12 @@ def 首页():
                         "note": "请先调整上面的单股参数，再重新点击“运行单股回测”。",
                     }
                 else:
-                    result = 运行交互回测(form)
+                    task_id = 启动后台回测(form, "single")
+                    if task_id is None:
+                        result["status"] = "已有回测正在运行，请等待当前任务完成。"
+                        result["error"] = True
+                    else:
+                        result["status"] = "单股回测已启动，正在后台运行。"
             elif request.form.get("run_mode") == "multi":
                 保存最近回测配置(form, "multi")
                 last_run_form, last_run_mode = copy.deepcopy(form), "multi"
@@ -3022,7 +3217,12 @@ def 首页():
                         "note": "请先调整上面的多股参数，再重新点击“运行多股回测”。",
                     }
                 else:
-                    result = 运行多股回测(form)
+                    task_id = 启动后台回测(form, "multi")
+                    if task_id is None:
+                        result["status"] = "已有回测正在运行，请等待当前任务完成。"
+                        result["error"] = True
+                    else:
+                        result["status"] = "多股回测已启动，正在后台运行。"
             else:
                 result = 运行交互回测(form)
         except Exception as error:  # pragma: no cover - 异常分支依赖真实数据/环境
@@ -3031,6 +3231,38 @@ def 首页():
         finally:
             # 无论回测成功、预检查拦截还是异常，都保留用户刚刚提交的选择。
             保存最近工作台配置(form)
+    elif (读取回测进度().get("status") == "completed"
+          and 读取回测进度().get("mode") == "multi"
+          and 最近多股报告["token"]):
+        result_path = os.path.join(最近多股报告["run_dir"] or "", "多股回测结果.json")
+        try:
+            with open(result_path, encoding="utf-8") as source:
+                payload = json.load(source)
+            summary = payload.get("汇总", {})
+            result["status"] = "多股回测完成"
+            result["report_url"] = f"/multi-report/{最近多股报告['token']}"
+            result["run_dir"] = 最近多股报告["run_dir"]
+            result["active_view"] = "multi"
+            result["metrics"] = {
+                "total_return": 格式化小数百分比(summary.get("组合总收益率", 0)),
+                "max_drawdown": f"{float(summary.get('组合最大回撤', 0)) * 100:.2f}%",
+                "win_rate": f"{float(summary.get('加权胜率', 0)) * 100:.2f}%",
+                "final_equity": f"{float(summary.get('组合最终权益', payload.get('初始资金', 0))):,.0f}",
+            }
+            result["backtest_result"] = {
+                "mode": "多股回测（已完成）",
+                "sample_count": f"{summary.get('股票数', 0)} 只股票",
+                "output_name": os.path.basename(最近多股报告["run_dir"] or "--"),
+                "rows": [
+                    {"label": "股票数量", "value": str(summary.get("股票数", 0))},
+                    {"label": "买入总数", "value": str(summary.get("买入总数", 0))},
+                    {"label": "卖出总数", "value": str(summary.get("卖出总数", 0))},
+                    {"label": "总成交笔数", "value": str(summary.get("总交易数", 0))},
+                ],
+                "note": "多股回测结果已写入组合回放和各股票决策回放。",
+            }
+        except (OSError, ValueError, json.JSONDecodeError):
+            result["status"] = "多股回测已完成，但汇总文件暂不可读。"
     elif 最近报告["token"]:
         snapshot = 读取单股回测摘要(最近报告["run_dir"])
         stock = snapshot.get("股票代码", os.path.basename(最近报告["run_dir"] or "").split("_")[-1])
@@ -3096,7 +3328,13 @@ def 首页():
         last_run_summary=last_run_summary,
         last_run_saved_at=last_run_saved_at,
         last_run_mode="单股" if last_run_mode == "single" else "多股" if last_run_mode == "multi" else "",
+        progress=读取回测进度(),
     )
+
+
+@应用.route("/api/backtest-progress")
+def 回测进度接口():
+    return jsonify(读取回测进度())
 
 
 @应用.route("/report/<token>")

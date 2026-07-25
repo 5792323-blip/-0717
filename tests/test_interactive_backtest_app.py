@@ -120,6 +120,72 @@ def test_grid_initial_ratio_applies_to_non_full_position_first_request(tmp_path)
     assert parameters["仓位参数"]["基础单只金额"] == 1000000
 
 
+def test_next_bar_entry_does_not_enable_same_bar_entry_when_saved(tmp_path):
+    snapshot = tmp_path / "config"
+    shutil.copytree(CONFIG, snapshot)
+    form = 构建默认表单()
+    form.update({
+        "single_entry_timing": "precomputed_stop_entry",
+        "single_switch_核心模块_same_bar_entry": False,
+        "single_switch_核心模块_next_bar_entry": True,
+    })
+
+    应用表单到配置(snapshot, 提取模式配置(form, "single"))
+
+    parameters = yaml.safe_load((snapshot / "参数配置.yaml").read_text(encoding="utf-8"))
+    switches = yaml.safe_load((snapshot / "模块开关配置.yaml").read_text(encoding="utf-8"))
+    core = yaml.safe_load((snapshot / "核心模块配置.yaml").read_text(encoding="utf-8"))
+    assert parameters["买入参数"]["买入时机模式"] == "precomputed_stop_entry"
+    assert parameters["技术指标参数"]["哨兵价本根形成立即买入"] is False
+    assert switches["模块类别"]["核心模块"]["same_bar_entry"]["启用"] is False
+    assert switches["模块类别"]["核心模块"]["next_bar_entry"]["启用"] is True
+    assert core["核心模块"]["本根形成立即成交"]["启用"] is False
+    assert core["核心模块"]["下一根执行"]["启用"] is True
+
+
+def test_save_config_persists_execution_timing_to_formal_config(tmp_path):
+    config_dir = tmp_path / "config"
+    shutil.copytree(CONFIG, config_dir)
+    workbench_path = tmp_path / "workbench.json"
+    with patch("运行程序.interactive_backtest_app.正式配置目录", str(config_dir)), \
+         patch("运行程序.interactive_backtest_app.工作台配置路径", str(workbench_path)), \
+         patch("运行程序.interactive_backtest_app.实验记录目录", str(tmp_path / "records")):
+        form = 构建默认表单()
+        form.update({
+            "single_entry_timing": "precomputed_stop_entry",
+            "single_switch_核心模块_same_bar_entry": False,
+            "single_switch_核心模块_next_bar_entry": True,
+        })
+        data = {key: value for key, value in form.items()}
+        data.update({
+            "save_config": "1",
+            "single_entry_timing": "precomputed_stop_entry",
+            "single_switch_核心模块_same_bar_entry": "",
+            "single_switch_核心模块_next_bar_entry": "on",
+        })
+        response = 应用.test_client().post("/", data=data)
+
+    assert response.status_code == 200
+    parameters = yaml.safe_load((config_dir / "参数配置.yaml").read_text(encoding="utf-8"))
+    switches = yaml.safe_load((config_dir / "模块开关配置.yaml").read_text(encoding="utf-8"))
+    assert parameters["买入参数"]["买入时机模式"] == "precomputed_stop_entry"
+    assert parameters["技术指标参数"]["哨兵价本根形成立即买入"] is False
+    assert switches["模块类别"]["核心模块"]["same_bar_entry"]["启用"] is False
+    assert switches["模块类别"]["核心模块"]["next_bar_entry"]["启用"] is True
+
+
+def test_same_bar_core_switch_can_select_timing_without_dropdown_change():
+    form = 规范化表单({
+        "ui_mode": "single",
+        "single_entry_timing": "precomputed_stop_entry",
+        "single_switch_核心模块_same_bar_entry": "on",
+        "single_switch_核心模块_next_bar_entry": "",
+    })
+    assert form["single_entry_timing"] == "same_bar_entry"
+    assert form["single_switch_核心模块_same_bar_entry"] is True
+    assert form["single_switch_核心模块_next_bar_entry"] is False
+
+
 def test_home_page_renders():
     client = 应用.test_client()
     response = client.get("/")
@@ -134,6 +200,8 @@ def test_home_page_renders():
     assert "公共指标、成交与网格参数" in body
     assert "严格预挂单下，1.001 代表成交价上限上浮 0.1%" in body
     assert "updateEffectiveConfig" in body
+    assert 'id="backtestProgress"' in body
+    assert "pollProgress" in body
     assert "有效订单金额预览" in body
     assert "策略单笔请求金额" in body
     assert "单只股票累计仓位上限比例" in body
@@ -170,6 +238,14 @@ def test_home_page_renders():
     assert re.search(r"买入前过滤因子</span><span class=\"fold-count\">13 项（\d+项）</span>", body)
     assert re.search(r"实验扩展因子</span><span class=\"fold-count\">17 项（\d+项）</span>", body)
     assert re.search(r"成交执行与核心模块</span><span class=\"fold-count\">6 项（\d+项）</span>", body)
+
+
+def test_backtest_progress_endpoint_returns_idle_state():
+    response = 应用.test_client().get("/api/backtest-progress")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] in {"idle", "running", "completed", "failed"}
+    assert {"completed", "total", "trades", "phase"}.issubset(payload)
 
 
 def test_replay_uses_single_pan_zoom_workbench_template():

@@ -95,7 +95,7 @@ def _整理股票结果(session, initial_capital, config_snapshot, elapsed):
 
 def 运行共享账户回测(
     stocks, start, end, capital, config_dir, liquidity_limit=0.01,
-    allow_partial_fill=True,
+    allow_partial_fill=True, progress_callback=None,
 ):
     """在一个共享账户中直接运行多只股票，不产生候选成交。"""
     started = perf_counter()
@@ -109,6 +109,11 @@ def 运行共享账户回测(
         data, _, _, _ = 准备回测数据(stock, start, end, config_dir)
         if data is None:
             errors.append({"股票代码": stock, "错误": "无可用数据或数据不足100行"})
+            if progress_callback:
+                progress_callback(
+                    phase="加载股票数据", completed=len(sessions) + len(errors),
+                    total=len(stocks), unit="股票", trades=0, message=f"跳过 {stock}：无可用数据",
+                )
             continue
         runtime = {
             "流动性上限比例": liquidity_limit,
@@ -133,9 +138,15 @@ def 运行共享账户回测(
             if pd.isna(timestamp):
                 continue
             timeline.setdefault(timestamp, []).append((session, position, row))
+        if progress_callback:
+            progress_callback(
+                phase="加载股票数据", completed=len(sessions) + len(errors),
+                total=len(stocks), unit="股票", trades=0, message=f"已加载 {stock}",
+            )
 
     curve = []
-    for timestamp in sorted(timeline):
+    timestamps = sorted(timeline)
+    for position, timestamp in enumerate(timestamps, 1):
         entries = timeline[timestamp]
         # 开盘时所有股票价格均已知；组合审批不能读取本根收盘价。
         for session, _, row in entries:
@@ -160,6 +171,11 @@ def 运行共享账户回测(
         point = account.快照()
         point["日期"] = timestamp.strftime("%Y-%m-%d %H:%M")
         curve.append(point)
+        if progress_callback and (position == 1 or position == len(timestamps) or position % max(1, len(timestamps) // 100) == 0):
+            progress_callback(
+                phase="共享账户时间轴回测", completed=position, total=len(timestamps),
+                unit="时间点", trades=len(account.审批记录), message=f"处理到 {point['日期']}",
+            )
 
     elapsed = perf_counter() - started
     snapshot = _读取配置快照(config_dir)
