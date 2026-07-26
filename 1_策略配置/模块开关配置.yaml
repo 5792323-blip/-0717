@@ -111,6 +111,41 @@
       启用: false
       状态: 实验
       模块: 8_过滤因子.rsi_band_alignment_filter
+    sentinel_volume_price_filter:
+      名称: 哨兵价量价确认（旧版兼容）
+      启用: false
+      状态: 实验
+      模块: 8_过滤因子.sentinel_volume_price_filter
+    sentinel_volume_dryup_filter:
+      名称: 缩量回撤衰竭
+      启用: false
+      状态: 实验
+      模块: 8_过滤因子.sentinel_volume_dryup_filter
+    sentinel_volume_price_strength_filter:
+      名称: 量价转强确认
+      启用: false
+      状态: 实验
+      模块: 8_过滤因子.sentinel_volume_price_strength_filter
+    sentinel_volume_trend_filter:
+      名称: 放量趋势确认
+      启用: false
+      状态: 实验
+      模块: 8_过滤因子.sentinel_volume_trend_filter
+    sentinel_close_strength_filter:
+      名称: 收盘承接强度
+      启用: false
+      状态: 实验
+      模块: 8_过滤因子.sentinel_close_strength_filter
+    sentinel_upper_shadow_filter:
+      名称: 上影抛压过滤
+      启用: false
+      状态: 实验
+      模块: 8_过滤因子.sentinel_upper_shadow_filter
+    sentinel_volume_drop_filter:
+      名称: 异常放量下跌过滤
+      启用: false
+      状态: 实验
+      模块: 8_过滤因子.sentinel_volume_drop_filter
   卖出规则:
     stagnation_exit:
       名称: 无效交易退出

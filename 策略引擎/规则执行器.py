@@ -274,6 +274,8 @@ class 规则执行器:
         self.冷却期剩余K线 = 0
         self.过滤因子列表 = self._加载过滤因子()
         self.过滤运行状态 = {}
+        self.哨兵量价快照 = {}
+        self.量价历史 = []
                 # 加载买入规则模块
         self.买入规则列表 = self._加载买入规则()
         
@@ -466,14 +468,13 @@ class 规则执行器:
         """执行 8_过滤因子 中所有已启用因子，并返回完整审计结果。"""
         允许买入 = True
         明细 = []
+        分组结果 = {}
         for 因子 in self.过滤因子列表:
             try:
                 结果 = 因子['模块'].检查(
                     信号类型, K线数据, 过滤状态, 因子.get('配置', {})
                 )
                 通过 = bool(结果.get('通过', True))
-                if not 通过:
-                    允许买入 = False
                 明细项 = {
                     '名称': 因子['配置'].get('名称', 因子['名称']),
                     '通过': 通过,
@@ -482,14 +483,38 @@ class 规则执行器:
                 明细项.update({key: value for key, value in 结果.items()
                             if key not in ('通过', '原因')})
                 明细.append(明细项)
+                组合组 = 因子['配置'].get('组合组')
+                组合逻辑 = 因子['配置'].get('组合逻辑', '全部通过')
+                if 组合组:
+                    group = 分组结果.setdefault(组合组, {
+                        '逻辑': 组合逻辑, '明细索引': [], '通过': [],
+                    })
+                    group['明细索引'].append(len(明细) - 1)
+                    group['通过'].append(通过)
+                    明细项['组合组'] = 组合组
+                    明细项['组合逻辑'] = 组合逻辑
+                elif not 通过:
+                    允许买入 = False
+                    明细项['阻拦'] = True
+                else:
+                    明细项['阻拦'] = False
             except Exception as e:
                 # 因子异常按拦截处理，避免故障时无提示地放行交易。
                 允许买入 = False
                 明细.append({
                     '名称': 因子['配置'].get('名称', 因子['名称']),
                     '通过': False,
+                    '阻拦': True,
                     '原因': f'因子执行异常: {e}',
                 })
+        for group in 分组结果.values():
+            logic = group['逻辑']
+            passed = any(group['通过']) if logic == '任一通过' else all(group['通过'])
+            for index in group['明细索引']:
+                明细[index]['组合通过'] = passed
+                明细[index]['阻拦'] = not passed
+            if not passed:
+                允许买入 = False
         return {'允许买入': 允许买入, '明细': 明细}
 
     def _更新过滤因子状态(self, K线数据):
@@ -516,6 +541,58 @@ class 规则执行器:
             except Exception as e:
                 状态[因子['名称']] = {'错误': str(e)}
         return 状态
+
+    def _生成哨兵量价快照(self):
+        """保存哨兵形成时的量价证据；不修改哨兵价和订单参数。"""
+        config = next(
+            (item.get("配置", {}) for item in self.过滤因子列表
+             if item.get("名称") == "sentinel_volume_price_filter"),
+            {},
+        )
+        lookback = max(8, int(config.get("回看根数", 8) or 8))
+        rows = self.量价历史[-lookback:]
+        if len(rows) < 8:
+            return {"有效": False, "历史根数": len(rows)}
+        volumes = [float(row.get("成交量", 0) or 0) for row in rows]
+        closes = [float(row.get("收盘", 0) or 0) for row in rows]
+        last = rows[-1]
+        price_range = float(last.get("最高", 0) or 0) - float(last.get("最低", 0) or 0)
+        close_strength = (
+            (float(last.get("收盘", 0)) - float(last.get("最低", 0))) / price_range
+            if price_range > 0 else 0.5
+        )
+        early_volume = float(np.mean(volumes[:5]))
+        recent_volume = float(np.mean(volumes[-3:]))
+        baseline = float(np.mean(volumes[:-1]))
+        return {
+            "有效": early_volume > 0 and baseline > 0 and closes[0] > 0,
+            "历史根数": len(rows),
+            "相对量能": recent_volume / baseline if baseline > 0 else None,
+            "缩量比例": recent_volume / early_volume if early_volume > 0 else None,
+            "近期价格变化": closes[-1] / closes[-3] - 1 if closes[-3] > 0 else None,
+            "趋势涨幅": closes[-1] / closes[-5] - 1 if closes[-5] > 0 else None,
+            "单根跌幅": closes[-1] / closes[-2] - 1 if closes[-2] > 0 else None,
+            "收盘强度": close_strength,
+            "上影比例": (
+                (float(last.get("最高", 0)) - max(float(last.get("开盘", 0)), float(last.get("收盘", 0))))
+                / price_range if price_range > 0 else 0.0
+            ),
+            "形成时间": last.get("时间", ""),
+            "形成信号": self.哨兵价形成类型,
+        }
+
+    def _记录量价历史(self, K线数据):
+        """仅保存已完成K线的基础量价字段，供下一次哨兵形成取证。"""
+        self.量价历史.append({
+            "开盘": K线数据.get("前复权_开盘", K线数据.get("开盘价", 0)),
+            "最高": K线数据.get("前复权_最高", K线数据.get("最高价", 0)),
+            "最低": K线数据.get("前复权_最低", K线数据.get("最低价", 0)),
+            "收盘": K线数据.get("前复权_收盘", K线数据.get("收盘价", 0)),
+            "成交量": K线数据.get("成交量", K线数据.get("不复权_成交量", 0)),
+            "时间": K线数据.get("完整时间", K线数据.get("日期", "")),
+        })
+        if len(self.量价历史) > 120:
+            self.量价历史.pop(0)
 
     def _处理每根扩展因子(self, K线数据):
         """更新扩展因子状态；调用位置决定该数据从哪根开始可见。"""
@@ -688,6 +765,7 @@ class 规则执行器:
             if len(self.MA序列) > 120:
                 self.MA序列.pop(0)
         # RSI序列已在前面更新，不需要重复追加
+        self._记录量价历史(K线数据)
         
         # 更新冷却期剩余
         if self.冷却期剩余K线 > 0:
@@ -799,6 +877,7 @@ class 规则执行器:
             self.哨兵价锁定信号类型 = 信号类型
             self.哨兵价形成索引 = self.已买入K线数
             self.哨兵价本根新形成 = True
+            self.哨兵量价快照 = self._生成哨兵量价快照()
             self.本根反推价 = float(反推价)
             self.本根反推信号类型 = 信号类型
             self.本根反推目标RSI = 结果.get('目标RSI')
@@ -826,17 +905,25 @@ class 规则执行器:
                 时间=str(getattr(K线数据, 'name', K线数据.get('完整时间', K线数据.get('日期', '')))),
             )
             return
-        # 网格模式下，普通 RSI 哨兵买入只负责首笔开仓。
-        # 已有持仓后的后续买入必须经过网格回撤层（L1/L2...）和新的
-        # 买入信号确认，不能因为新的哨兵突破而绕过 5% 首档回撤条件。
-        if (该股票代码 in self.当前持仓
-                and self.因子管理器
-                and 'grid_addon' in getattr(self.因子管理器, '已启用因子', {})):
-            self.本根决策["动作原因"] = "网格模式：已有持仓，普通RSI买入关闭，等待网格回撤触发"
-            self.本根决策["决策记录"]["阶段"] = "网格等待"
+        # 普通 RSI 哨兵突破只负责首次开仓。已有持仓后，后续加仓必须先
+        # 达到网格回撤层（L1/L2...），再由新的买入信号确认；网格关闭时
+        # 则持仓期间不再买入，不能让上涨中的新哨兵突破绕过回撤条件。
+        if 该股票代码 in self.当前持仓:
+            网格启用 = bool(
+                self.因子管理器
+                and 'grid_addon' in getattr(self.因子管理器, '已启用因子', {})
+            )
+            self.本根决策["动作原因"] = (
+                "已有持仓，普通RSI买入关闭，等待网格回撤触发"
+                if 网格启用 else "已有持仓且网格未启用，禁止继续买入"
+            )
+            self.本根决策["决策记录"]["阶段"] = "网格等待" if 网格启用 else "持仓等待"
             self.本根决策["决策记录"]["买入"] = {
-                "结果": "等待网格回撤",
-                "网格规则": "持仓后仅允许L1及后续网格加仓",
+                "结果": "等待网格回撤" if 网格启用 else "持仓期间禁止普通买入",
+                "网格规则": (
+                    "持仓后仅允许L1及后续网格加仓"
+                    if 网格启用 else "网格关闭，持仓后不允许加仓"
+                ),
             }
             return
         if 该股票代码 in getattr(self, '_本根已买入股票', set()):
@@ -943,6 +1030,7 @@ class 规则执行器:
             '有顶背离': self.有顶背离,
         }
         过滤状态.update(getattr(self, '过滤运行状态', {}))
+        过滤状态['哨兵量价快照'] = getattr(self, '哨兵量价快照', {})
         
         def 执行过滤后买入():
             过滤结果 = self._检查过滤因子(
@@ -950,7 +1038,10 @@ class 规则执行器:
             )
             self.本根决策['过滤检查'] = 过滤结果['明细']
             if not 过滤结果['允许买入']:
-                被拦截 = [x['名称'] for x in 过滤结果['明细'] if not x['通过']]
+                被拦截 = [
+                    x['名称'] for x in 过滤结果['明细']
+                    if x.get('阻拦', not x['通过'])
+                ]
                 self.本根决策['动作原因'] = '过滤因子拦截: ' + '、'.join(被拦截)
                 self.本根决策["决策记录"]["阶段"] = "过滤拦截"
                 self.本根决策["决策记录"]["买入"]["结果"] = "拦截"
@@ -1062,7 +1153,7 @@ class 规则执行器:
 
     def _执行买入(self, 规则, K线数据, 当前索引, 当前RSI, 哨兵价=None,
               信号类型=None, 信号质量分=None, 建议仓位=None, 按开盘成交=False,
-              指定股数=None, 成交模式="breakout"):
+              指定股数=None, 指定金额=None, 成交模式="breakout"):
         """执行买入"""
         前复权开盘 = K线数据.get('前复权_开盘', 0)
         不复权开盘 = K线数据.get('不复权_开盘', 0)
@@ -1093,6 +1184,27 @@ class 规则执行器:
             最低=K线数据.get('前复权_最低', 0),
         )
         self.交易记录器.设置哨兵价(哨兵价)
+
+        # 同根成交必须先证明市场实际触及哨兵价。旧版 same_bar_entry
+        # 分支会直接计算计划价，可能在最高价未到哨兵价时虚构成交。
+        # 下一根开盘执行属于上一根已确认突破后的挂单，不在这里重复判断。
+        if not 按开盘成交:
+            try:
+                当前最高价 = float(K线数据.get('前复权_最高'))
+                当前哨兵价 = float(哨兵价)
+            except (TypeError, ValueError):
+                当前最高价 = None
+                当前哨兵价 = None
+            if (当前最高价 is None or 当前哨兵价 is None
+                    or 当前最高价 < 当前哨兵价):
+                self.本根决策["动作原因"] = (
+                    f"最高价{当前最高价 if 当前最高价 is not None else '--'}"
+                    f"未达到哨兵价{当前哨兵价 if 当前哨兵价 is not None else '--'}，买入未成交"
+                )
+                self.本根决策.setdefault("决策记录", {}).setdefault("买入", {})[
+                    "成交拒绝原因"
+                ] = self.本根决策["动作原因"]
+                return False
         
         # 计算仓位（使用传入的信号质量分，或重新计算）
         if 信号质量分 is not None:
@@ -1168,7 +1280,10 @@ class 规则执行器:
         
         # 买入金额受仓位基础金额和信号自身上限共同限制。
         股票代码 = str(K线数据.get('股票代码', '600519')).strip().upper()
-        网格加仓 = str(信号类型 or '').startswith('网格加仓') and 指定股数 is not None
+        网格加仓 = (
+            str(信号类型 or '').startswith('网格加仓')
+            and (指定股数 is not None or 指定金额 is not None)
+        )
         if 股票代码.startswith(('688', '689')):
             最低交易单位 = 200
         elif 股票代码.startswith(('4', '8', '9')):
@@ -1184,33 +1299,31 @@ class 规则执行器:
                 self.本根决策["动作原因"] = "扩展仓位因子建议仓位为0"
                 return False
             目标金额 = float(建议仓位)
-        if 单笔上限 is not None and 指定股数 is None:
+        if 单笔上限 is not None and 指定股数 is None and 指定金额 is None:
             目标金额 = min(目标金额, float(单笔上限))
         当前估值价 = 不复权开盘
         结构性可用金额, 账户限制 = self._计算账户结构性可用金额(当前估值价)
-        if getattr(self, '流动性上限比例', None) is not None:
-            上一日成交额 = K线数据.get('_上一交易日成交额')
-            if 上一日成交额 is not None and not pd.isna(上一日成交额) and float(上一日成交额) > 0:
-                结构性可用金额 = min(
-                    结构性可用金额,
-                    float(上一日成交额) * float(self.流动性上限比例),
-                )
+        # 暂时屏蔽成交额流动性限制。页面仍保留该参数，便于后续恢复；
+        # 当前买入数量只受现金、仓位结构、价格和股数取整约束。
         if getattr(self, '单股全仓模式', False):
             结构性可用金额 = max(0.0, self.当前现金)
             网格启用 = bool(
                 self.因子管理器
                 and 'grid_addon' in getattr(self.因子管理器, '已启用因子', {})
             )
-            买入金额上限 = min(结构性可用金额, 目标金额) if 网格启用 else 结构性可用金额
+            if 指定金额 is not None:
+                买入金额上限 = 结构性可用金额
+            else:
+                买入金额上限 = min(结构性可用金额, 目标金额) if 网格启用 else 结构性可用金额
             # 修复：单股全仓模式不应无条件忽略“单笔买入上限”。
             # 否则首笔会直接用尽现金，导致网格加仓/后续信号无法再买入（不足一手）。
-            if 指定股数 is None and 单笔上限 is not None:
+            if 指定股数 is None and 指定金额 is None and 单笔上限 is not None:
                 try:
                     买入金额上限 = min(买入金额上限, float(单笔上限))
                 except (TypeError, ValueError):
                     pass
-        elif 指定股数 is not None:
-            # 网格加仓/指定股数模式：不再受“基础单只金额”限制，只受结构性风控与现金限制。
+        elif 指定股数 is not None or 指定金额 is not None:
+            # 网格加仓的指定股数/金额不受“基础单只金额”限制，只受结构性风控与现金限制。
             买入金额上限 = 结构性可用金额
         else:
             买入金额上限 = min(max(10000, 目标金额), 结构性可用金额)
@@ -1218,6 +1331,12 @@ class 规则执行器:
             请求股数 = max(
                 最低交易单位,
                 int(float(指定股数) / 最低交易单位) * 最低交易单位,
+            )
+        elif 指定金额 is not None:
+            请求金额 = max(0.0, float(指定金额))
+            请求股数 = max(
+                最低交易单位,
+                int(请求金额 / 买入价 / 最低交易单位) * 最低交易单位,
             )
         else:
             请求金额 = (
@@ -1250,6 +1369,11 @@ class 规则执行器:
             except (TypeError, ValueError):
                 股数 = 0
             股数 = max(最低交易单位, int(股数 / 最低交易单位) * 最低交易单位)
+        elif 指定金额 is not None:
+            股数 = max(
+                最低交易单位,
+                int(min(float(指定金额), 买入金额上限) / 买入价 / 最低交易单位) * 最低交易单位,
+            )
         else:
             股数 = max(最低交易单位, int(买入金额上限 / 买入价 / 最低交易单位) * 最低交易单位)
             if 股数 < 最低交易单位 and 结构性可用金额 >= 一手金额:
@@ -1368,6 +1492,7 @@ class 规则执行器:
                 "网格_已加仓次数": 0,
                 "网格_已触发次数": 0,
                 "网格_待加仓股数": 0,
+                "网格_待加仓金额": 0.0,
                 "网格_待加仓层级": [],
                 "网格_待单形成索引": None,
                 # 与“网格_基准最高价”配套：本根发生开仓/加仓时，不把本根最高价计入“加仓后高点”
@@ -1565,6 +1690,7 @@ class 规则执行器:
                         self.哨兵价锁定信号类型 = _上穿类型
                         self.哨兵价形成索引 = 当前索引
                         self.哨兵价本根新形成 = True
+                        self.哨兵量价快照 = self._生成哨兵量价快照()
             except Exception:
                 pass
         
@@ -1786,16 +1912,23 @@ class 规则执行器:
             })
             return
 
-        # 网格触发先累计，下一根K线开盘执行，不再额外等待新的RSI信号。
-        # 这样网格本身就是独立买入条件，避免“已触发但永远等不到新信号”。
+        # 网格触发先累计为待确认状态；只有后续K线重新形成哨兵价并通过
+        # 买入因子后，才允许把待加仓数量成交。
         本根新信号 = getattr(self, '本根反推信号类型', None)
         本根有新信号 = bool(getattr(self, '哨兵价本根新形成', False) and 本根新信号)
         待加仓股数 = int(持仓.get('网格_待加仓股数', 0) or 0)
+        待加仓金额 = float(持仓.get('网格_待加仓金额', 0.0) or 0.0)
         try:
             待单形成索引 = int(持仓.get('网格_待单形成索引'))
         except (TypeError, ValueError):
             待单形成索引 = None
-        下一根待单 = bool(待加仓股数 > 0 and 待单形成索引 is not None and 待单形成索引 < 当前索引)
+        # 网格回撤只形成待确认状态；必须在此前已经形成待单，之后再出现
+        # 新哨兵价并通过买入因子，不能在下一根开盘直接把网格单成交。
+        已有待确认网格 = bool(
+            (待加仓股数 > 0 or 待加仓金额 > 0)
+            and 待单形成索引 is not None
+            and 待单形成索引 < 当前索引
+        )
 
         # 加仓也要满足“买入侧防护”：过滤因子 + 扩展因子买入前检查
         信号类型 = 本根新信号 if 本根有新信号 else (持仓.get('信号类型') or '')
@@ -1814,6 +1947,7 @@ class 规则执行器:
                 '有顶背离': self.有顶背离,
             }
             过滤状态.update(getattr(self, '过滤运行状态', {}))
+            过滤状态['哨兵量价快照'] = getattr(self, '哨兵量价快照', {})
             try:
                 过滤结果 = self._检查过滤因子(信号类型, K线数据, 过滤状态)
             except Exception:
@@ -1838,35 +1972,29 @@ class 规则执行器:
             except Exception:
                 pass
 
-        if 下一根待单:
-            触发列表 = [{
-                '触发加仓': True,
-                '触发价': K线数据.get('前复权_开盘'),
-                '加仓股数': 待加仓股数,
-                '网格层级': max(list(持仓.get('网格_待加仓层级', []) or [1])),
-                '因子': 'grid_addon',
-                '_仅执行待单': True,
-                '_下一根开盘执行': True,
-            }]
-        else:
-            触发列表 = self.因子管理器.加仓前检查(持仓, K线数据, self.全局状态)
+        触发列表 = self.因子管理器.加仓前检查(持仓, K线数据, self.全局状态)
+        # 本根同时达到回撤档位并形成新哨兵价时，允许当根完成确认成交；
+        # 只有没有新哨兵价时，网格回撤才保留为待确认状态。
         # 已有待加仓单时，只要本根重新出现有效买入信号，即使没有新的网格
         # 回撤档位，也要把历史待加仓数量一次性成交。
-        if (not 触发列表 and 本根有新信号 and
-                int(持仓.get('网格_待加仓股数', 0) or 0) > 0):
+        if (not 触发列表 and 已有待确认网格 and 本根有新信号 and
+                (int(持仓.get('网格_待加仓股数', 0) or 0) > 0
+                 or float(持仓.get('网格_待加仓金额', 0.0) or 0.0) > 0)):
             触发列表 = [{
                 '触发加仓': True,
                 '触发价': self.哨兵价当前,
                 '加仓股数': int(持仓.get('网格_待加仓股数', 0) or 0),
+                '加仓金额': float(持仓.get('网格_待加仓金额', 0.0) or 0.0),
                 '网格层级': max(list(持仓.get('网格_待加仓层级', []) or [1])),
                 '因子': 'grid_addon',
                 '_仅执行待单': True,
             }]
         if not 触发列表:
-            if not 本根有新信号 and 持仓.get('网格_待加仓股数', 0):
+            if (持仓.get('网格_待加仓股数', 0)
+                    or 持仓.get('网格_待加仓金额', 0.0)):
                 self.本根决策.setdefault('决策记录', {}).setdefault('买入', {}).update({
                     '加仓检查': '待成交',
-                    '加仓拦截原因': '已有待加仓数量，等待下一根K线开盘执行',
+                    '加仓拦截原因': '已满足网格回撤，等待新的哨兵价和买入因子确认',
                 })
             return
 
@@ -1882,7 +2010,16 @@ class 规则执行器:
                 加仓股数 = int(float(触发.get("加仓股数"))) if 触发.get("加仓股数") is not None else None
             except (TypeError, ValueError):
                 加仓股数 = None
-            if not 触发价 or not 加仓股数 or 加仓股数 < 100:
+            try:
+                加仓金额 = float(触发.get("加仓金额")) if 触发.get("加仓金额") is not None else None
+            except (TypeError, ValueError):
+                加仓金额 = None
+            生命周期预算 = (
+                触发.get("网格模式") == "lifecycle_budget"
+                or ((加仓金额 or 0) > 0 and (加仓股数 or 0) <= 0)
+            )
+            if (not 触发价 or (生命周期预算 and (加仓金额 is None or 加仓金额 <= 0))
+                    or (not 生命周期预算 and (not 加仓股数 or 加仓股数 < 100))):
                 continue
 
             仅执行待单 = bool(触发.get('_仅执行待单', False))
@@ -1893,7 +2030,14 @@ class 规则执行器:
                     待层级.append(层级)
                 持仓['网格_已触发次数'] = max(int(持仓.get('网格_已触发次数', 0) or 0), 层级)
                 持仓['网格_待加仓层级'] = sorted(待层级)
-                持仓['网格_待加仓股数'] = int(持仓.get('网格_待加仓股数', 0) or 0) + 加仓股数
+                if 生命周期预算:
+                    持仓['网格_待加仓金额'] = float(
+                        持仓.get('网格_待加仓金额', 0.0) or 0.0
+                    ) + float(加仓金额 or 0.0)
+                else:
+                    持仓['网格_待加仓股数'] = (
+                        int(持仓.get('网格_待加仓股数', 0) or 0) + int(加仓股数 or 0)
+                    )
                 if 持仓.get('网格_待单形成索引') is None:
                     持仓['网格_待单形成索引'] = 当前索引
                 # 下一层从本层触发后的高点继续计算；本根最高价已完整可见。
@@ -1902,13 +2046,22 @@ class 规则执行器:
                 except (TypeError, ValueError):
                     pass
 
-            下一根开盘执行 = bool(触发.get('_下一根开盘执行', False))
-            if not 本根有新信号 and not 下一根开盘执行:
+            下一根开盘执行 = False
+            if not 本根有新信号:
                 self.本根决策.setdefault('决策记录', {}).setdefault('买入', {}).update({
                     '加仓检查': '待成交',
-                    '加仓拦截原因': '网格已触发，下一根K线开盘执行',
+                    '加仓拦截原因': '网格已触发，等待新的哨兵价和买入因子确认',
                     '待加仓层级': ' + '.join(f'L{x}' for x in 持仓['网格_待加仓层级']),
                     '待加仓股数': 持仓['网格_待加仓股数'],
+                })
+                continue
+
+            # 最终成交前再次校验，防止任何待单/因子路径绕过“本根新哨兵”条件。
+            # 网格回撤只能产生待确认数量，不能单独调用成交模型。
+            if not getattr(self, '哨兵价本根新形成', False):
+                self.本根决策.setdefault('决策记录', {}).setdefault('买入', {}).update({
+                    '加仓检查': '待成交',
+                    '加仓拦截原因': '网格回撤已满足，但本根未形成新哨兵价',
                 })
                 continue
 
@@ -1920,9 +2073,11 @@ class 规则执行器:
             if not 新规则:
                 continue
             累计加仓股数 = int(持仓.get('网格_待加仓股数', 0) or 0)
+            累计加仓金额 = float(持仓.get('网格_待加仓金额', 0.0) or 0.0)
             待成交层级 = list(持仓.get('网格_待加仓层级', []) or [])
             if 累计加仓股数 <= 0:
-                continue
+                if 累计加仓金额 <= 0:
+                    continue
 
             当前RSI = K线数据.get('_上一根RSI', 50)
             层级标识 = '+'.join(f'L{x}' for x in 待成交层级) or f'L{层级}'
@@ -1931,6 +2086,7 @@ class 规则执行器:
                 K线数据.get('前复权_开盘') if 下一根开盘执行
                 else self.哨兵价当前 if 本根有新信号 and self.哨兵价当前 else 触发价
             )
+            成交前股数 = int(持仓.get('股数', 0) or 0)
             已加仓 = self._执行买入(
                 规则=None, K线数据=K线数据, 当前索引=当前索引,
                 当前RSI=当前RSI,
@@ -1939,12 +2095,15 @@ class 规则执行器:
                 信号质量分=信号质量分,
                 建议仓位=None,
                 按开盘成交=下一根开盘执行,
-                指定股数=累计加仓股数,
+                指定股数=None if 累计加仓金额 > 0 else 累计加仓股数,
+                指定金额=累计加仓金额 if 累计加仓金额 > 0 else None,
                 成交模式="normal" if 下一根开盘执行 else "pullback",
             )
             if 已加仓:
+                实际加仓股数 = max(0, int(持仓.get('股数', 0) or 0) - 成交前股数)
                 持仓['网格_已加仓次数'] = int(持仓.get('网格_已触发次数', 0) or 0)
                 持仓['网格_待加仓股数'] = 0
+                持仓['网格_待加仓金额'] = 0.0
                 持仓['网格_待加仓层级'] = []
                 持仓['网格_待单形成索引'] = None
                 self.交易记录器.更新交易记录(
@@ -1955,12 +2114,13 @@ class 规则执行器:
                     加仓后总持仓=持仓.get('股数'),
                 )
                 self.本根决策["最终动作"] = "加仓"
-                self.本根决策["动作原因"] = f"网格累计加仓 {层级标识}，本次合并成交{累计加仓股数}股"
+                self.本根决策["动作原因"] = f"网格累计加仓 {层级标识}，本次合并成交{实际加仓股数}股"
                 self.本根决策["决策记录"]["阶段"] = "加仓成交"
                 self.本根决策.setdefault("决策记录", {}).setdefault("买入", {}).update({
                     "加仓原因": self.本根决策["动作原因"],
                     "加仓触发价": 触发价,
-                    "加仓股数": 累计加仓股数,
+                    "加仓股数": 实际加仓股数,
+                    "加仓金额": 累计加仓金额 if 累计加仓金额 > 0 else None,
                     "加仓因子": 触发.get("因子"),
                     "买入条件重新确认": bool(本根有新信号),
                     "重新确认信号": 本根新信号,
@@ -2149,7 +2309,7 @@ class 规则执行器:
         self._记录账户审批(
             类型="卖出", 结果="实际成交", 原因=规则.get('说明', '卖出规则触发'),
             请求股数=卖出股数, 成交股数=卖出股数, 成交价=卖出价,
-            交易费用=卖出费用, 成交净额=卖出净金额,
+            交易费用=卖出费用, 成交净额=卖出净金额, 盈亏比例=实际盈亏比例,
             网格层级=int(持仓.get('网格_已加仓次数', 0) or 0),
             时间=str(getattr(K线数据, 'name', K线数据.get('完整时间', K线数据.get('日期', '')))),
         )

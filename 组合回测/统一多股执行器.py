@@ -95,7 +95,8 @@ def _整理股票结果(session, initial_capital, config_snapshot, elapsed):
 
 def 运行共享账户回测(
     stocks, start, end, capital, config_dir, liquidity_limit=0.01,
-    allow_partial_fill=True, progress_callback=None,
+    allow_partial_fill=True, progress_callback=None, stop_requested=None,
+    checkpoint_callback=None,
 ):
     """在一个共享账户中直接运行多只股票，不产生候选成交。"""
     started = perf_counter()
@@ -146,7 +147,44 @@ def 运行共享账户回测(
 
     curve = []
     timestamps = sorted(timeline)
-    for position, timestamp in enumerate(timestamps, 1):
+    actual_buys = actual_sells = rejected_orders = partial_fills = 0
+    realized_wins = realized_losses = 0
+    total_fees = 0.0
+    approval_cursor = 0
+    peak_equity = float(capital)
+    max_drawdown = 0.0
+    stopped = False
+
+    hs_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "数据模块", "大盘数据", "hs300_日K线.pkl",
+    )
+    hs_map = {}
+    if os.path.exists(hs_path):
+        try:
+            hs_data = pd.read_pickle(hs_path)
+            hs_data["date"] = hs_data["date"].astype(str).str[:10]
+            hs_map = dict(zip(hs_data["date"], pd.to_numeric(hs_data["close"], errors="coerce")))
+        except (OSError, ValueError, KeyError):
+            hs_map = {}
+    hs_dates = sorted(hs_map)
+    hs_cursor = -1
+    # 基准收益必须从本次回测区间的起点归一化，不能使用指数文件的
+    # 全历史首个点位，否则跨区间比较会把指数点位变化误报为收益率。
+    benchmark_start = timestamps[0].strftime("%Y-%m-%d") if timestamps else ""
+    if benchmark_start:
+        eligible = [
+            day for day in hs_dates
+            if day <= benchmark_start and pd.notna(hs_map[day]) and float(hs_map[day]) > 0
+        ]
+        if eligible:
+            hs_cursor = hs_dates.index(eligible[-1])
+    hs_first = float(hs_map[hs_dates[hs_cursor]]) if hs_cursor >= 0 else 0.0
+
+    for 时间轴索引, timestamp in enumerate(timestamps, 1):
+        if stop_requested and stop_requested():
+            stopped = True
+            break
         entries = timeline[timestamp]
         # 开盘时所有股票价格均已知；组合审批不能读取本根收盘价。
         for session, _, row in entries:
@@ -154,11 +192,11 @@ def 运行共享账户回测(
                 row.get("不复权_开盘")
             )
         entries.sort(key=lambda item: _会话优先级(item[0]), reverse=True)
-        for session, position, row in entries:
+        for session, 股票位置, row in entries:
             row_data = row.to_dict()
             row_data["_上一根RSI"] = session["上一根RSI"]
             row_data["_上一根最低价RSI"] = session["上一根最低价RSI"]
-            session["执行器"].每根K线处理(row_data, position)
+            session["执行器"].每根K线处理(row_data, 股票位置)
             session["上一根RSI"] = row.get("RSI_14", 50)
             session["上一根最低价RSI"] = row.get(
                 "RSI_最低价", session["上一根RSI"]
@@ -171,10 +209,79 @@ def 运行共享账户回测(
         point = account.快照()
         point["日期"] = timestamp.strftime("%Y-%m-%d %H:%M")
         curve.append(point)
-        if progress_callback and (position == 1 or position == len(timestamps) or position % max(1, len(timestamps) // 100) == 0):
+
+        new_approvals = account.审批记录[approval_cursor:]
+        approval_cursor = len(account.审批记录)
+        for row in new_approvals:
+            shares = int(float(row.get("成交股数", 0) or 0))
+            result = str(row.get("结果", ""))
+            if result == "实际成交" and shares > 0:
+                if row.get("类型") == "买入":
+                    actual_buys += 1
+                elif row.get("类型") == "卖出":
+                    actual_sells += 1
+                    try:
+                        pnl = float(row.get("盈亏比例"))
+                        if pnl > 0:
+                            realized_wins += 1
+                        elif pnl < 0:
+                            realized_losses += 1
+                    except (TypeError, ValueError):
+                        pass
+            else:
+                rejected_orders += 1
+            if str(row.get("审批状态", "")) == "部分成交":
+                partial_fills += 1
+            try:
+                total_fees += float(row.get("交易费用", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+
+        peak_equity = max(peak_equity, float(point["权益"]))
+        drawdown = (peak_equity - float(point["权益"])) / max(peak_equity, 1.0)
+        max_drawdown = max(max_drawdown, drawdown)
+        date_key = point["日期"][:10]
+        while hs_cursor + 1 < len(hs_dates) and hs_dates[hs_cursor + 1] <= date_key:
+            hs_cursor += 1
+        hs_value = float(hs_map[hs_dates[hs_cursor]]) if hs_cursor >= 0 else 0.0
+        strategy_return = (float(point["权益"]) / max(float(capital), 1.0) - 1.0) * 100
+        benchmark_return = (hs_value / hs_first - 1.0) * 100 if hs_first and hs_value else None
+        live = {
+            "当前权益": round(float(point["权益"]), 2),
+            "策略收益率": round(strategy_return, 6),
+            "沪深300收益率": round(benchmark_return, 6) if benchmark_return is not None else None,
+            "超额收益率": round(strategy_return - benchmark_return, 6) if benchmark_return is not None else None,
+            "当前回撤": round(drawdown * 100, 6),
+            "最大回撤": round(max_drawdown * 100, 6),
+            "实际买入": actual_buys,
+            "实际卖出": actual_sells,
+            "实际成交": actual_buys + actual_sells,
+            "审批请求": len(account.审批记录),
+            "拒绝订单": rejected_orders,
+            "部分成交": partial_fills,
+            "已实现盈利": realized_wins,
+            "已实现亏损": realized_losses,
+            "已平仓胜率": realized_wins / max(realized_wins + realized_losses, 1) * 100,
+            "累计费用": round(total_fees, 2),
+            "当前日期": point["日期"],
+            "现金": round(float(point["现金"]), 2),
+            "持仓市值": round(float(point["持仓市值"]), 2),
+            "资金使用率": round(float(point["资金使用率"]) * 100, 6),
+            "持仓数量": int(point.get("持仓数量", 0) or 0),
+        }
+        curve[-1].update({"沪深300权益": round(hs_value / hs_first * capital, 2) if hs_first and hs_value else None})
+        if progress_callback and (时间轴索引 == 1 or 时间轴索引 == len(timestamps) or 时间轴索引 % max(1, len(timestamps) // 100) == 0):
             progress_callback(
-                phase="共享账户时间轴回测", completed=position, total=len(timestamps),
-                unit="时间点", trades=len(account.审批记录), message=f"处理到 {point['日期']}",
+                phase="共享账户时间轴回测", completed=时间轴索引, total=len(timestamps),
+                unit="时间点", trades=actual_buys + actual_sells, message=f"处理到 {point['日期']}",
+                approvals=len(account.审批记录), live={**live, "已处理时间点": 时间轴索引, "时间点总数": len(timestamps)},
+                curve_point={**curve[-1], **live},
+            )
+        if checkpoint_callback and (时间轴索引 == 1 or 时间轴索引 == len(timestamps) or 时间轴索引 % max(1, len(timestamps) // 100) == 0):
+            checkpoint_callback(
+                completed=时间轴索引, total=len(timestamps), phase="共享账户时间轴回测",
+                live={**live, "已处理时间点": 时间轴索引, "时间点总数": len(timestamps)},
+                curve_point={**curve[-1], **live},
             )
 
     elapsed = perf_counter() - started
@@ -183,10 +290,31 @@ def 运行共享账户回测(
         _整理股票结果(session, capital, snapshot, elapsed)
         for session in sessions.values()
     ]
+    final_live = {
+        "已处理时间点": len(curve),
+        "时间点总数": len(timestamps),
+        "当前权益": round(float(account.权益()), 2),
+        "策略收益率": round((float(account.权益()) / max(float(capital), 1.0) - 1.0) * 100, 6),
+        "最大回撤": round(max_drawdown * 100, 6),
+        "实际买入": actual_buys,
+        "实际卖出": actual_sells,
+        "实际成交": actual_buys + actual_sells,
+        "审批请求": len(account.审批记录),
+        "拒绝订单": rejected_orders,
+        "部分成交": partial_fills,
+        "已平仓胜率": realized_wins / max(realized_wins + realized_losses, 1) * 100,
+        "累计费用": round(total_fees, 2),
+        "现金": round(float(account.现金), 2),
+        "持仓市值": round(float(account.持仓市值()), 2),
+        "资金使用率": round(float(account.持仓市值()) / max(float(account.权益()), 1.0) * 100, 6),
+        "持仓数量": len(account.持仓),
+    }
     return {
         "账户": account,
         "股票结果": results,
         "错误": errors,
         "组合权益曲线": curve,
         "耗时": elapsed,
+        "stopped": stopped,
+        "live": final_live,
     }

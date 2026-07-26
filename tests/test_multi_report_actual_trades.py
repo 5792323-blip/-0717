@@ -28,4 +28,4 @@ def test_shared_account_report_populates_actual_trade_table(tmp_path):
     assert "<td>1/1</td>" in page
     assert "实际买/卖" in page
     assert "mainSplitter" in page
-    assert "analysisToggle" in page
+    assert "analysisToggle" not in page

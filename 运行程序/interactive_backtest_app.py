@@ -21,7 +21,7 @@ sys.path.insert(0, 项目根目录)
 
 import yaml
 import pandas as pd
-from flask import Flask, Response, jsonify, render_template_string, request, send_from_directory, url_for
+from flask import Flask, Response, jsonify, render_template_string, request, send_file, send_from_directory, url_for
 
 from 回测引擎.backtest_engine import 跑回测, 保存结果
 from 回测引擎.report_generator import 生成报告
@@ -44,6 +44,9 @@ from 组合回测.统一多股执行器 import 运行共享账户回测
 最近报告 = {"token": None, "path": None, "run_dir": None}
 最近多股报告 = {"token": None, "path": None, "run_dir": None}
 回测进度锁 = threading.Lock()
+回测停止事件 = threading.Event()
+回测检查点锁 = threading.Lock()
+回测检查点 = {}
 回测进度 = {
     "task_id": None,
     "status": "idle",
@@ -55,6 +58,15 @@ from 组合回测.统一多股执行器 import 运行共享账户回测
     "trades": 0,
     "message": "",
     "error": False,
+    "live": {},
+    "run_dir": None,
+    "started_at": None,
+    "updated_at": None,
+    "checkpoint_path": None,
+    "task_label": "",
+    "result_url": None,
+    "metrics": {},
+    "backtest_result": {},
 }
 沪深300列表路径 = os.path.join(项目根目录, "数据模块", "hs300_list.txt")
 
@@ -67,38 +79,103 @@ def 读取回测进度():
 def _回测进度回调(task_id, **changes):
     with 回测进度锁:
         if 回测进度.get("task_id") == task_id:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            live = changes.pop("live", None)
+            if live is not None:
+                回测进度["live"] = live
             回测进度.update(changes)
+            回测进度["updated_at"] = now
+
+
+def _写入_json原子(path, payload):
+    temporary_path = f"{path}.tmp"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(temporary_path, "w", encoding="utf-8") as target:
+        json.dump(payload, target, ensure_ascii=False, indent=2, default=str)
+    os.replace(temporary_path, path)
+
+
+def _保存回测检查点(task_id, run_dir, **changes):
+    if not run_dir:
+        return
+    with 回测检查点锁:
+        previous = copy.deepcopy(回测检查点.get(task_id, {}))
+        curve = previous.get("曲线", [])
+        point = changes.get("curve_point")
+        if isinstance(point, dict):
+            curve.append(point)
+            curve = curve[-500:]
+        payload = {
+            **previous,
+            "task_id": task_id,
+            "run_dir": run_dir,
+            "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "曲线": curve,
+            **{key: value for key, value in changes.items() if key != "curve_point"},
+        }
+        checkpoint_path = os.path.join(run_dir, "checkpoint", "latest.json")
+        _写入_json原子(checkpoint_path, payload)
+        回测检查点[task_id] = payload
+    _回测进度回调(task_id, checkpoint_path=checkpoint_path)
+
+
+def 请求停止回测():
+    return 回测停止事件.set()
 
 
 def _后台执行回测(form, mode, task_id):
     callback = lambda **changes: _回测进度回调(task_id, **changes)
+    run_dir = None
     try:
         if mode == "multi":
-            result = 运行多股回测(form, progress=callback)
+            result = 运行多股回测(
+                form, progress=callback,
+                stop_requested=回测停止事件.is_set,
+                checkpoint_callback=lambda **changes: _保存回测检查点(
+                    task_id, 回测进度.get("run_dir"), **changes
+                ),
+            )
         else:
             result = 运行交互回测(form, progress=callback)
         _回测进度回调(
             task_id,
-            status="completed",
-            phase="已完成",
-            completed=读取回测进度().get("total", 1),
+            status="stopped" if result.get("stopped") else "completed",
+            phase="已停止" if result.get("stopped") else "已完成",
+            completed=(result.get("live") or {}).get(
+                "已处理时间点", 读取回测进度().get("total", 1)
+            ) if result.get("stopped") else 读取回测进度().get("total", 1),
             message=result.get("status", "回测完成"),
             result_url=result.get("report_url") or result.get("multi_report_url"),
+            live=result.get("live", {}),
+            metrics=result.get("metrics", {}),
+            backtest_result=result.get("backtest_result", {}),
         )
     except Exception as error:  # pragma: no cover - 依赖真实数据的后台异常
-        _回测进度回调(task_id, status="failed", phase="运行失败", error=True, message=str(error))
+        _回测进度回调(task_id, status="failed", phase="运行失败", error=True, message=f"{type(error).__name__}: {error}")
 
 
 def 启动后台回测(form, mode):
     with 回测进度锁:
-        if 回测进度.get("status") == "running":
+        if 回测进度.get("status") in {"starting", "running", "finalizing", "stopping"}:
             return None
         task_id = uuid.uuid4().hex
+        started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        回测停止事件.clear()
         回测进度.clear()
         回测进度.update({
-            "task_id": task_id, "status": "running", "mode": mode,
+            "task_id": task_id, "status": "starting", "mode": mode,
             "phase": "准备回测", "completed": 0, "total": 0,
             "unit": "股票", "trades": 0, "message": "正在启动回测", "error": False,
+            "live": {}, "run_dir": None, "started_at": started_at,
+            "updated_at": started_at, "checkpoint_path": None,
+            "task_label": (
+                f"单股 · {form.get('single_stock', '--')}"
+                if mode == "single" else
+                f"多股 · {len(解析多股输入(form))} 只股票"
+            ),
+            "result_url": None,
+            "metrics": {},
+            "backtest_result": {},
         })
     threading.Thread(target=_后台执行回测, args=(copy.deepcopy(form), mode, task_id), daemon=True).start()
     return task_id
@@ -128,6 +205,12 @@ def 启动后台回测(form, mode):
         ("quality_score_filter", "信号质量分过滤"), ("consecutive_loss_filter", "连续亏损过滤"),
         ("rsi_position_filter", "RSI位置过滤"), ("rsi_neutral_zone_filter", "RSI中性区过滤"),
         ("rsi_band_alignment_filter", "RSI区间对齐过滤"),
+        ("sentinel_volume_dryup_filter", "缩量回撤衰竭"),
+        ("sentinel_volume_price_strength_filter", "量价转强确认"),
+        ("sentinel_volume_trend_filter", "放量趋势确认"),
+        ("sentinel_close_strength_filter", "收盘承接强度"),
+        ("sentinel_upper_shadow_filter", "上影抛压过滤"),
+        ("sentinel_volume_drop_filter", "异常放量下跌过滤"),
     ],
     "扩展因子": [
         ("market_state", "大盘状态"), ("rsi_ma_filter", "RSI_MA因子"),
@@ -135,7 +218,7 @@ def 启动后台回测(form, mode):
         ("entry_timing", "K线动量入场"), ("signal_scorer", "信号质量评分"),
         ("momentum_exit", "动能退出因子"), ("take_profit", "止盈因子"),
         ("position_sizing", "动态仓位"), ("total_control", "总仓位控制"),
-        ("grid_addon", "网格加仓（实验：固定/线性/倍数）"),
+        ("grid_addon", "网格加仓（实验：固定/线性/倍数/生命周期预算）"),
         ("xgboost_trend", "XGBoost趋势"), ("randomforest_market", "RandomForest大盘"),
         ("committee_vote", "委员会投票"), ("ml_entry_timing", "ML入场时机"),
         ("ml_fake_drop", "ML假跌判断"), ("volatility_classifier", "波动率分类器"),
@@ -388,6 +471,41 @@ def 启动后台回测(form, mode):
       border-radius: 0;
       background: transparent;
     }
+    .module-card[data-module-name] { scroll-margin-top: 16px; }
+    .module-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      padding: 0 10px 8px 36px;
+    }
+    .module-meta span, .selected-item small {
+      border-radius: 999px;
+      background: rgba(15, 118, 110, 0.10);
+      color: var(--accent);
+      font-size: 10px;
+      padding: 2px 6px;
+    }
+    .selected-summary {
+      margin: 12px 0;
+      padding: 12px;
+      border: 1px solid rgba(15, 118, 110, 0.30);
+      border-radius: 14px;
+      background: #f2fbf8;
+    }
+    .selected-summary-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .selected-summary h3 { margin: 0; font-size: 13px; }
+    .selected-summary-count { color: var(--accent); font-size: 12px; font-weight: 700; }
+    .selected-summary-tools { display: flex; gap: 6px; margin-top: 8px; }
+    .selected-summary-tools button { border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); cursor: pointer; padding: 5px 8px; font-size: 11px; }
+    .selected-summary-tools button.active { border-color: var(--accent); color: var(--accent); background: #e9f8f3; }
+    .selected-groups { display: grid; gap: 7px; margin-top: 10px; }
+    .selected-group { border-top: 1px solid rgba(15, 118, 110, 0.16); padding-top: 7px; }
+    .selected-group:first-child { border-top: 0; padding-top: 0; }
+    .selected-group strong { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    .selected-item { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; border: 0; padding: 3px 0; background: transparent; color: var(--ink); cursor: pointer; text-align: left; font-size: 12px; }
+    .selected-item:hover { color: var(--accent); }
+    .selected-empty { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .config-fold[data-stage] > summary::after { content: attr(data-hint); margin-left: auto; color: var(--muted); font-size: 10px; font-weight: 400; }
     .module-params {
       display: grid;
       grid-template-columns: 1fr;
@@ -502,9 +620,17 @@ def 启动后台回测(form, mode):
     .progress-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
     .progress-title { font-weight: 700; }
     .progress-detail { color: var(--muted); font-size: 12px; }
+    .progress-task { margin-top: 6px; color: var(--ink); font-size: 13px; }
+    .progress-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .progress-actions a, .progress-actions button { text-decoration: none; cursor: pointer; }
+    .progress-error { margin-top: 10px; padding: 9px 10px; border-radius: 7px; color: var(--danger); background: rgba(185, 28, 28, 0.08); white-space: pre-wrap; }
     .progress-track { height: 10px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: #e7e1d7; }
     .progress-bar { width: 0%; height: 100%; border-radius: inherit; background: var(--accent); transition: width .3s ease; }
     .progress-meta { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+    .live-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin-top: 12px; }
+    .live-metrics span { display: flex; flex-direction: column; gap: 2px; padding: 7px; border: 1px solid var(--line); border-radius: 7px; background: rgba(255,255,255,.55); font-size: 12px; }
+    .live-metrics b { color: var(--muted); font-size: 10px; font-weight: 500; }
+    @media (max-width: 900px) { .live-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
     .pill {
       display: inline-flex;
       align-items: center;
@@ -682,6 +808,12 @@ def 启动后台回测(form, mode):
 
       <div class="strategy-banner"><strong>公共策略配置</strong>　RSI、哨兵价、买卖规则、网格和成交成本在两个账户模式中完全共用；旧版双配置会自动迁移，不再形成第二套策略。</div>
 
+      <section class="selected-summary" id="selectedStrategy" aria-live="polite">
+        <div class="selected-summary-head"><h3>当前已选策略模块</h3><span class="selected-summary-count" id="selectedStrategyCount">0 项</span></div>
+        <div class="selected-summary-tools"><button type="button" id="selectedOnlyToggle">仅显示已选</button><button type="button" id="effectiveOnlyToggle">仅显示会改变结果</button></div>
+        <div class="selected-groups" id="selectedStrategyGroups"></div>
+      </section>
+
       <div class="section mode-section" data-mode-section="single">
         <div class="mode-head" data-account-section="single">
           <h2>单股账户</h2>
@@ -764,6 +896,7 @@ def 启动后台回测(form, mode):
               <option value="fixed_tranche" {% if form.single_grid_mode == 'fixed_tranche' %}selected{% endif %}>固定分层（实验）</option>
               <option value="linear" {% if form.single_grid_mode == 'linear' %}selected{% endif %}>线性递增（实验）</option>
               <option value="multiplier" {% if form.single_grid_mode == 'multiplier' %}selected{% endif %}>倍数加仓（实验）</option>
+              <option value="lifecycle_budget" {% if form.single_grid_mode == 'lifecycle_budget' %}selected{% endif %}>生命周期预算（25/15/20/20/20）</option>
             </select>
           </div>
           <div>
@@ -832,15 +965,16 @@ def 启动后台回测(form, mode):
           <p class="compact-note">核心版本：{{ form.single_core_version }}。这些参数是公共策略，只写入本次实验快照；无效的信号过期字段已隐藏并保持原值。</p>
         </details>
         {% for group in single_module_groups %}
-        <details class="config-fold" {% if group.category == '买入规则' %}open{% endif %}>
-          <summary><span>{{ group.title }}</span><span class="fold-count">{{ group.modules|length }} 项（{{ group.selected_count }}项）</span></summary>
+        <details class="config-fold" data-stage="{{ group.stage }}">
+          <summary data-hint="{{ group.hint }}"><span>{{ group.title }}</span><span class="fold-count">{{ group.modules|length }} 项（{{ group.selected_count }}项）</span></summary>
           <div class="fold-body checklist">
             {% for item in group.modules %}
-            <div class="module-card {% if item.disabled %}disabled{% endif %}">
+            <div class="module-card {% if item.disabled %}disabled{% endif %}" data-module-name="{{ item.name }}" data-module-label="{{ item.label }}" data-module-stage="{{ item.stage }}" data-module-effect="{{ item.effect }}">
               <label class="checkbox {% if item.disabled %}disabled{% endif %}">
                 <input type="checkbox" name="{{ item.name }}" {% if item.enabled %}checked{% endif %} {% if item.disabled %}disabled{% endif %}>
                 <span>{{ item.label }}</span><span class="module-status">{{ item.status }}</span>
               </label>
+              <div class="module-meta"><span>{{ item.effect }}</span>{% if item.combination %}<span>{{ item.combination }}</span>{% endif %}</div>
               {% if item.params %}
               <div class="module-params">
                 {% for param in item.params %}
@@ -898,6 +1032,7 @@ def 启动后台回测(form, mode):
               <option value="fixed_tranche" {% if form.multi_grid_mode == 'fixed_tranche' %}selected{% endif %}>固定分层（实验）</option>
               <option value="linear" {% if form.multi_grid_mode == 'linear' %}selected{% endif %}>线性递增（实验）</option>
               <option value="multiplier" {% if form.multi_grid_mode == 'multiplier' %}selected{% endif %}>倍数加仓（实验）</option>
+              <option value="lifecycle_budget" {% if form.multi_grid_mode == 'lifecycle_budget' %}selected{% endif %}>生命周期预算（25/15/20/20/20）</option>
             </select>
           </div>
           <div>
@@ -1036,15 +1171,16 @@ def 启动后台回测(form, mode):
           <p class="compact-note">兼容字段由公共策略自动同步，不形成第二套策略。</p>
         </details>
         {% for group in multi_module_groups %}
-        <details class="config-fold shared-strategy-duplicate" hidden {% if group.category == '买入规则' %}open{% endif %}>
-          <summary><span>{{ group.title }}</span><span class="fold-count">{{ group.modules|length }} 项（{{ group.selected_count }}项）</span></summary>
+        <details class="config-fold shared-strategy-duplicate" data-stage="{{ group.stage }}" hidden>
+          <summary data-hint="{{ group.hint }}"><span>{{ group.title }}</span><span class="fold-count">{{ group.modules|length }} 项（{{ group.selected_count }}项）</span></summary>
           <div class="fold-body checklist">
             {% for item in group.modules %}
-            <div class="module-card {% if item.disabled %}disabled{% endif %}">
+            <div class="module-card {% if item.disabled %}disabled{% endif %}" data-module-name="{{ item.name }}" data-module-label="{{ item.label }}" data-module-stage="{{ item.stage }}" data-module-effect="{{ item.effect }}">
               <label class="checkbox {% if item.disabled %}disabled{% endif %}">
                 <input type="checkbox" name="{{ item.name }}" {% if item.enabled %}checked{% endif %} {% if item.disabled %}disabled{% endif %}>
                 <span>{{ item.label }}</span><span class="module-status">{{ item.status }}</span>
               </label>
+              <div class="module-meta"><span>{{ item.effect }}</span>{% if item.combination %}<span>{{ item.combination }}</span>{% endif %}</div>
               {% if item.params %}
               <div class="module-params">
                 {% for param in item.params %}
@@ -1098,8 +1234,12 @@ def 启动后台回测(form, mode):
           <span id="progressTitle" class="progress-title">回测进度</span>
           <span id="progressDetail" class="progress-detail">等待回测</span>
         </div>
+        <div id="progressTask" class="progress-task">任务：--</div>
         <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
-        <div class="progress-meta"><span id="progressCount">0 / 0</span><span id="progressTrades">成交 0 笔</span></div>
+        <div class="progress-meta"><span id="progressCount">0 / 0</span><span id="progressTrades">实际成交 0 笔</span><button id="stopBacktest" class="secondary" type="button">停止回测</button><a id="checkpointLink" class="secondary" href="/api/backtest-checkpoint" target="_blank">查看最近检查点</a></div>
+        <div id="liveMetrics" class="live-metrics"></div>
+        <div id="progressActions" class="progress-actions"></div>
+        <div id="progressError" class="progress-error" hidden></div>
       </div>
 
       <div class="panel toolbar">
@@ -1115,18 +1255,18 @@ def 启动后台回测(form, mode):
 
       <div class="panel metrics">
         <div class="metrics-grid">
-          <div class="metric"><span>总收益率</span><strong>{{ metrics.total_return }}</strong></div>
-          <div class="metric"><span>最大回撤</span><strong>{{ metrics.max_drawdown }}</strong></div>
-          <div class="metric"><span>胜率</span><strong>{{ metrics.win_rate }}</strong></div>
-          <div class="metric"><span>最终权益</span><strong>{{ metrics.final_equity }}</strong></div>
+          <div class="metric"><span>总收益率</span><strong id="resultTotalReturn">{{ metrics.total_return }}</strong></div>
+          <div class="metric"><span>最大回撤</span><strong id="resultMaxDrawdown">{{ metrics.max_drawdown }}</strong></div>
+          <div class="metric"><span>胜率</span><strong id="resultWinRate">{{ metrics.win_rate }}</strong></div>
+          <div class="metric"><span>最终权益</span><strong id="resultFinalEquity">{{ metrics.final_equity }}</strong></div>
         </div>
       </div>
 
       <div class="panel result-card">
         <div class="result-grid">
-          <div class="result-box"><span>回测类型</span><strong>{{ backtest_result.mode }}</strong></div>
-          <div class="result-box"><span>样本数量</span><strong>{{ backtest_result.sample_count }}</strong></div>
-          <div class="result-box"><span>结果文件</span><strong>{{ backtest_result.output_name }}</strong></div>
+          <div class="result-box"><span>回测类型</span><strong id="resultMode">{{ backtest_result.mode }}</strong></div>
+          <div class="result-box"><span>样本数量</span><strong id="resultSampleCount">{{ backtest_result.sample_count }}</strong></div>
+          <div class="result-box"><span>结果文件</span><strong id="resultOutputName">{{ backtest_result.output_name }}</strong></div>
         </div>
         {% if backtest_result.rows %}
         <table class="result-table">
@@ -1314,14 +1454,14 @@ def 启动后台回测(form, mode):
       const singleLimit = capital * singleRatio;
       const totalLimit = capital * totalRatio;
       const cashLimit = capital * Math.max(0, 1 - cashFloor);
-      const gridOn = checked('single_switch_扩展因子_grid_addon');
-      const gridRatio = Number(valueOf('single_grid_initial_ratio', 1));
+      const gridOn = checked(`${prefix}_switch_扩展因子_grid_addon`);
+      const gridRatio = Number(valueOf(`${prefix}_grid_initial_ratio`, 1));
       const strategyRequest = gridOn ? budget * gridRatio : budget;
       const structural = Math.max(0, Math.min(strategyRequest, singleLimit, totalLimit, cashLimit));
       const ruleNames = {rsi_cross_20: 'RSI20', rsi_cross_30: 'RSI30', rsi_cross_ma: 'RSI均线', rsi_cross_70: 'RSI70'};
       const ruleCaps = Object.entries(ruleNames).flatMap(([id, label]) => {
-        if (!checked(`single_switch_买入规则_${id}`)) return [];
-        const cap = valueOf(`single_param_买入规则_${id}_单笔买入上限`, '未设置');
+        if (!checked(`${prefix}_switch_买入规则_${id}`)) return [];
+        const cap = valueOf(`${prefix}_param_买入规则_${id}_单笔买入上限`, '未设置');
         return [`${label} ${money(cap)}元`];
       });
       target.innerHTML = `<strong>有效订单金额预览</strong>
@@ -1345,15 +1485,15 @@ def 启动后台回测(form, mode):
         tb_replay: 'TB复刻',
         same_bar_entry: '本根形成后立即买入',
       }[valueOf('single_entry_timing')] || valueOf('single_entry_timing');
-      const grid = checked('single_switch_扩展因子_grid_addon')
-        ? `网格加仓 ${valueOf('single_grid_mode')} · 首笔${valueOf('single_grid_initial_ratio')} · 倍数${valueOf('single_grid_multiplier')}`
-        : '网格加仓关闭';
       const prefix = mode === 'single' ? 'single' : 'multi';
+      const grid = checked(`${prefix}_switch_扩展因子_grid_addon`)
+        ? `网格加仓 ${valueOf(`${prefix}_grid_mode`)} · 首笔${valueOf(`${prefix}_grid_initial_ratio`)} · 倍数${valueOf(`${prefix}_grid_multiplier`)}`
+        : '网格加仓关闭';
       const budget = mode === 'single' && checked('single_full_position_mode')
         ? Number(valueOf('single_capital', 0))
         : Number(valueOf(`${prefix}_base_position`, 0));
-      const request = checked('single_switch_扩展因子_grid_addon')
-        ? budget * Number(valueOf('single_grid_initial_ratio', 1))
+      const request = checked(`${prefix}_switch_扩展因子_grid_addon`)
+        ? budget * Number(valueOf(`${prefix}_grid_initial_ratio`, 1))
         : budget;
       effectiveConfig.innerHTML = `<b>${mode === 'single' ? '单股账户' : '多股共享账户'}：</b>资金 ${money(valueOf(`${prefix}_capital`))} · 首笔请求 ${money(request)} · ${timing} · ${grid}`;
       updateOrderPreview('single');
@@ -1369,6 +1509,8 @@ def 启动后台回测(form, mode):
       if (multiplier) multiplier.closest('div').hidden = mode !== 'multiplier';
       const initial = field(`${prefix}_grid_initial_ratio`);
       if (initial) {
+        if (mode === 'lifecycle_budget') initial.value = '0.25';
+        initial.readOnly = mode === 'lifecycle_budget';
         const holder = initial.closest('div');
         let note = holder.querySelector('.grid-formula-note');
         if (!note) {
@@ -1376,10 +1518,12 @@ def 启动后台回测(form, mode):
           note.className = 'compact-note grid-formula-note';
           holder.appendChild(note);
         }
-        note.textContent = mode === 'multiplier'
-          ? '先按此比例换算首笔股数，之后按首笔股数的1、2、4、8倍加仓。'
+        note.textContent = mode === 'lifecycle_budget'
+          ? '总网格预算按首次25%、L1 15%、L2-L4各20%分配；最多加仓4次，成交时按实际价格换算整手股数。'
+          : mode === 'multiplier'
+          ? '先按此比例换算首笔股数；倍数为2时，后续按首笔股数的2、4、8、16倍加仓。'
           : mode === 'linear'
-            ? '先按此比例换算首笔股数，之后按首笔股数的1、2、3、4倍加仓。'
+            ? '先按此比例换算首笔股数，后续依次按首笔股数的2、3、4、5倍加仓。'
             : '先按此比例换算首笔股数，之后每层使用相同股数。';
       }
     }
@@ -1471,7 +1615,64 @@ def 启动后台回测(form, mode):
     }
     preset.addEventListener('change', () => applyPreset(preset.value));
     document.querySelector('form.sidebar').addEventListener('submit', syncPublicStrategy);
+    const selectedStrategyGroups = document.getElementById('selectedStrategyGroups');
+    const selectedStrategyCount = document.getElementById('selectedStrategyCount');
+    const selectedOnlyToggle = document.getElementById('selectedOnlyToggle');
+    const effectiveOnlyToggle = document.getElementById('effectiveOnlyToggle');
+    let moduleView = 'all';
+    const strategyCards = () => [...document.querySelectorAll('.module-card[data-module-name]')]
+      .filter(card => !card.closest('.shared-strategy-duplicate'));
+    function updateSelectedStrategy() {
+      const selected = strategyCards().filter(card => card.querySelector('input[type="checkbox"]')?.checked);
+      selectedStrategyCount.textContent = `${selected.length} 项`;
+      if (!selected.length) {
+        selectedStrategyGroups.innerHTML = '<div class="selected-empty">尚未选择策略模块。只记录模块不会改变成交结果；正式拦截、仓位、执行和卖出模块会影响回测。</div>';
+      } else {
+        const groups = new Map();
+        selected.forEach(card => {
+          const stage = card.dataset.moduleStage;
+          if (!groups.has(stage)) groups.set(stage, []);
+          groups.get(stage).push(card);
+        });
+        selectedStrategyGroups.innerHTML = [...groups.entries()].map(([stage, cards]) => `
+          <div class="selected-group"><strong>${stage}（${cards.length}）</strong>
+            ${cards.map(card => `<button type="button" class="selected-item" data-target="${card.dataset.moduleName}"><span>${card.dataset.moduleLabel}</span><small>${card.dataset.moduleEffect}</small></button>`).join('')}
+          </div>`).join('');
+      }
+      strategyCards().forEach(card => {
+        const enabled = card.querySelector('input[type="checkbox"]')?.checked;
+        const effective = enabled && !card.dataset.moduleEffect.includes('实验模块');
+        card.hidden = moduleView === 'selected' ? !enabled : moduleView === 'effective' ? !effective : false;
+      });
+    }
+    selectedStrategyGroups.addEventListener('click', event => {
+      const item = event.target.closest('[data-target]');
+      if (!item) return;
+      const card = document.querySelector(`.module-card[data-module-name="${item.dataset.target}"]`);
+      if (!card) return;
+      const group = card.closest('details');
+      if (group) group.open = true;
+      card.scrollIntoView({behavior: 'smooth', block: 'center'});
+      card.style.outline = '2px solid var(--accent)';
+      setTimeout(() => { card.style.outline = ''; }, 900);
+    });
+    selectedOnlyToggle.addEventListener('click', () => {
+      moduleView = moduleView === 'selected' ? 'all' : 'selected';
+      selectedOnlyToggle.classList.toggle('active', moduleView === 'selected');
+      effectiveOnlyToggle.classList.remove('active');
+      updateSelectedStrategy();
+    });
+    effectiveOnlyToggle.addEventListener('click', () => {
+      moduleView = moduleView === 'effective' ? 'all' : 'effective';
+      effectiveOnlyToggle.classList.toggle('active', moduleView === 'effective');
+      selectedOnlyToggle.classList.remove('active');
+      updateSelectedStrategy();
+    });
+    document.querySelectorAll('input[name^="single_switch_"]').forEach(node => {
+      node.addEventListener('change', updateSelectedStrategy);
+    });
     syncPublicStrategy();
+    updateSelectedStrategy();
     showMode(uiMode.value || 'multi');
 
     const progressBox = document.getElementById('backtestProgress');
@@ -1483,27 +1684,74 @@ def 启动后台回测(form, mode):
       const total = Number(state.total || 0);
       const completed = Number(state.completed || 0);
       const percent = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
-      document.getElementById('progressTitle').textContent = state.status === 'failed' ? '回测失败' : state.status === 'completed' ? '回测完成' : '回测正在运行';
+      document.getElementById('progressTitle').textContent = state.status === 'failed' ? '回测失败' : state.status === 'completed' ? '回测完成' : state.status === 'stopped' ? '回测已停止（部分结果）' : '回测正在运行';
       document.getElementById('progressDetail').textContent = `${state.phase || ''} · ${state.message || ''}`;
       document.getElementById('progressBar').style.width = `${percent}%`;
       document.getElementById('progressCount').textContent = total ? `${completed} / ${total} ${state.unit || ''}（${percent}%）` : '正在准备数据';
-      document.getElementById('progressTrades').textContent = `成交 ${Number(state.trades || 0).toLocaleString('zh-CN')} 笔`;
+      document.getElementById('progressTrades').textContent = `实际成交 ${Number((state.live || {}).实际成交 || state.trades || 0).toLocaleString('zh-CN')} 笔`;
+      const live = state.live || {};
+      document.getElementById('progressTask').textContent = `任务：${state.task_label || (state.mode === 'single' ? '单股回测' : state.mode === 'multi' ? '多股回测' : '--')}`;
+      const metric = (label, value) => `<span><b>${label}</b>${value}</span>`;
+      const pct = value => value == null ? '--' : `${Number(value).toFixed(2)}%`;
+      document.getElementById('liveMetrics').innerHTML = [
+        metric('当前权益', live.当前权益 == null ? '--' : Number(live.当前权益).toLocaleString('zh-CN')),
+        metric('策略收益', pct(live.策略收益率)), metric('沪深300', pct(live.沪深300收益率)),
+        metric('当前超额', pct(live.超额收益率)), metric('最大回撤', pct(live.最大回撤)),
+        metric('胜率', pct(live.已平仓胜率)), metric('现金', live.现金 == null ? '--' : Number(live.现金).toLocaleString('zh-CN')),
+        metric('使用率', pct(live.资金使用率)), metric('买入/卖出', `${live.实际买入 || 0} / ${live.实际卖出 || 0}`),
+        metric('拒绝订单', Number(live.拒绝订单 || 0).toLocaleString('zh-CN')), metric('累计费用', live.累计费用 == null ? '--' : Number(live.累计费用).toLocaleString('zh-CN')),
+      ].join('');
+      const stopButton = document.getElementById('stopBacktest');
+      if (stopButton) stopButton.hidden = state.mode !== 'multi' || !['starting', 'running', 'stopping'].includes(state.status);
+      const checkpointLink = document.getElementById('checkpointLink');
+      if (checkpointLink) checkpointLink.hidden = !state.checkpoint_path;
+      const actions = document.getElementById('progressActions');
+      if (actions) {
+        const links = [];
+        if (state.result_url) links.push(`<a class="pill" href="${state.result_url}" target="_blank">打开本次回测报告</a>`);
+        if (state.checkpoint_path && state.status === 'stopped') links.push('<a class="pill" href="/api/backtest-checkpoint" target="_blank">打开部分结果检查点</a>');
+        actions.innerHTML = links.join('');
+      }
+      const errorBox = document.getElementById('progressError');
+      if (errorBox) {
+        errorBox.hidden = !(state.status === 'failed' || state.error);
+        errorBox.textContent = state.status === 'failed' ? `失败原因：${state.message || '后台任务未返回具体原因'}` : '';
+      }
+      if (state.status === 'completed' || state.status === 'stopped') {
+        const metrics = state.metrics || {};
+        const summary = state.backtest_result || {};
+        const setText = (id, value) => {
+          const element = document.getElementById(id);
+          if (element && value != null && value !== '') element.textContent = value;
+        };
+        setText('resultTotalReturn', metrics.total_return);
+        setText('resultMaxDrawdown', metrics.max_drawdown);
+        setText('resultWinRate', metrics.win_rate);
+        setText('resultFinalEquity', metrics.final_equity);
+        setText('resultMode', summary.mode);
+        setText('resultSampleCount', summary.sample_count);
+        setText('resultOutputName', summary.output_name);
+      }
     }
     async function pollProgress() {
       try {
         const response = await fetch('/api/backtest-progress', {cache: 'no-store'});
         const state = await response.json();
         renderProgress(state);
-        if (state.status === 'completed' || state.status === 'failed') {
+        if (['completed', 'stopped', 'failed'].includes(state.status)) {
           clearInterval(progressTimer);
-          if (state.status === 'completed') setTimeout(() => window.location.reload(), 800);
+          // 保留最终状态卡，用户可以直接打开本次报告；不自动跳转或重复提交 POST。
         }
       } catch (error) {
         document.getElementById('progressDetail').textContent = '暂时无法读取进度，回测仍可能在后台运行';
       }
     }
     renderProgress(progressInitial);
-    if (progressInitial && progressInitial.status === 'running') {
+    document.getElementById('stopBacktest')?.addEventListener('click', async () => {
+      await fetch('/api/backtest-stop', {method: 'POST'});
+      pollProgress();
+    });
+    if (progressInitial && ['starting', 'running', 'stopping'].includes(progressInitial.status)) {
       progressTimer = setInterval(pollProgress, 1000);
       pollProgress();
     }
@@ -1653,7 +1901,7 @@ def 工作台配置摘要(form, prefix):
     return summary
 
 
-模块元信息键 = {"名称", "英文标识", "启用", "状态", "模块", "说明"}
+模块元信息键 = {"名称", "英文标识", "启用", "状态", "模块", "说明", "组合组", "组合逻辑", "组合说明"}
 
 
 def _按标识取列表项(items, module_id):
@@ -1849,6 +2097,10 @@ def 模块字段(form, prefix, category):
     result = []
     for module_id, label in 模块显示顺序[category]:
         item = switches.get(category, {}).get(module_id, {})
+        filter_config = (
+            _按标识取列表项(config["过滤因子配置"].get("过滤因子列表", []), module_id)
+            if category == "过滤因子" else {}
+        )
         status = item.get("状态", "完成") if module_id != "next_bar_entry" else "完成"
         params = []
         for param_key, default_value in 模块参数字典(config, category, module_id).items():
@@ -1864,8 +2116,11 @@ def 模块字段(form, prefix, category):
             })
         result.append({
             "name": f"{prefix}_switch_{category}_{module_id}", "label": label,
+            "category": category,
+            "module_id": module_id,
             "enabled": bool(form.get(f"{prefix}_switch_{category}_{module_id}")),
             "status": status, "disabled": status == "未就绪",
+            "combination": filter_config.get("组合说明", ""),
             "params": params,
             "param_note": (
                 "打开后：用上一根收盘时的 RSI 状态预先反推本根哨兵价，本根最高价突破后成交。"
@@ -1881,22 +2136,66 @@ def 模块字段(form, prefix, category):
 
 
 def 模块分组字段(form, prefix):
-    titles = {
-        "买入规则": "② 买入信号规则",
-        "卖出规则": "⑤ 卖出与退出风控",
-        "过滤因子": "④ 买入前过滤因子",
-        "扩展因子": "⑥ 实验扩展因子",
-        "核心模块": "③ 成交执行与核心模块",
+    stages = {
+        "入场信号": ("① 入场信号", "产生买入候选"),
+        "入场确认": ("② 入场确认与过滤", "决定是否允许首次买入和网格加仓"),
+        "仓位网格": ("③ 仓位与网格", "决定资金使用与加仓数量"),
+        "成交执行": ("④ 成交执行", "决定触发价与成交时机"),
+        "卖出退出": ("⑤ 卖出与持仓管理", "决定保护、止盈和退出"),
+        "实验研究": ("⑥ 实验与研究", "默认不属于正式交易基线"),
     }
+    stage_by_module = {
+        ("买入规则", module_id): "入场信号"
+        for module_id, _label in 模块显示顺序["买入规则"]
+    }
+    stage_by_module.update({
+        ("过滤因子", module_id): "入场确认"
+        for module_id, _label in 模块显示顺序["过滤因子"]
+    })
+    stage_by_module.update({
+        ("核心模块", module_id): "成交执行"
+        for module_id, _label in 模块显示顺序["核心模块"]
+    })
+    stage_by_module.update({
+        ("卖出规则", module_id): "卖出退出"
+        for module_id, _label in 模块显示顺序["卖出规则"]
+    })
+    stage_by_module.update({
+        ("扩展因子", "position_sizing"): "仓位网格",
+        ("扩展因子", "total_control"): "仓位网格",
+        ("扩展因子", "grid_addon"): "仓位网格",
+        ("扩展因子", "entry_timing"): "成交执行",
+        ("扩展因子", "momentum_exit"): "卖出退出",
+        ("扩展因子", "take_profit"): "卖出退出",
+    })
+    effect_by_category = {
+        "买入规则": "触发型·产生信号",
+        "过滤因子": "拦截型·正式拦截",
+        "卖出规则": "退出型·改变卖出",
+        "核心模块": "执行型·决定成交",
+        "扩展因子": "实验模块·按配置生效",
+    }
+    grouped = {stage: [] for stage in stages}
+    for category in 模块显示顺序:
+        for module in 模块字段(form, prefix, category):
+            stage = stage_by_module.get((category, module["module_id"]), "实验研究")
+            module["stage"] = stage
+            module["effect"] = effect_by_category[category]
+            if module["combination"]:
+                module["effect"] = "结构确认·任一通过"
+            if stage == "仓位网格":
+                module["effect"] = "仓位型·改变资金使用"
+            grouped[stage].append(module)
     return [
         {
-            "category": category,
-            "title": titles.get(category, category),
-            "modules": modules,
-            "selected_count": sum(1 for item in modules if item["enabled"]),
+            "stage": stage,
+            "title": title,
+            "hint": hint,
+            "modules": grouped[stage],
+            "selected_count": sum(1 for item in grouped[stage] if item["enabled"]),
         }
-        for category in 模块显示顺序
-        for modules in [模块字段(form, prefix, category)]
+        for stage, (title, hint) in stages.items()
+        if grouped[stage]
     ]
 
 
@@ -1945,7 +2244,8 @@ def 规范化表单(form_data):
             "tb_replay", "same_bar_entry", "legacy_same_bar_lookahead", "intrabar_breakout",
         ):
             normalized[f"{prefix}_entry_timing"] = defaults[f"{prefix}_entry_timing"]
-        if normalized[f"{prefix}_grid_mode"] not in ("fixed_tranche", "linear", "multiplier"):
+        if normalized[f"{prefix}_grid_mode"] not in (
+                "fixed_tranche", "linear", "multiplier", "lifecycle_budget"):
             normalized[f"{prefix}_grid_mode"] = defaults[f"{prefix}_grid_mode"]
         if normalized[f"{prefix}_entry_timing"] == "precomputed_stop_entry":
             normalized[f"{prefix}_switch_核心模块_same_bar_entry"] = True
@@ -1980,6 +2280,9 @@ def 规范化表单(form_data):
     }
     for key, caster in numeric_fields.items():
         normalized[key] = 安全读取表单值(form_data, key, caster, defaults[key])
+    for prefix in ("single", "multi"):
+        if normalized[f"{prefix}_grid_mode"] == "lifecycle_budget":
+            normalized[f"{prefix}_grid_initial_ratio"] = 0.25
     for key in defaults:
         if "_switch_" in key:
             normalized[key] = (
@@ -2176,7 +2479,11 @@ def 应用表单到配置(config_dir, form):
         grid_params.update({
             "加仓模式": form.get("grid_mode", "multiplier"),
             "倍数": float(form.get("grid_multiplier", 2.0) or 2.0),
+            "生命周期预算比例": [0.25, 0.15, 0.20, 0.20, 0.20],
+            "生命周期预算金额": float(form.get("base_position", 0.0) or 0.0),
         })
+        if form.get("grid_mode") == "lifecycle_budget":
+            grid_params["最大加仓次数"] = 4
 
     for item in exits["卖出条件列表"]:
         if item["英文标识"] == "time_exit":
@@ -2613,13 +2920,16 @@ def 初始化结果():
 
 def 运行交互回测(form, progress=None):
     form = 归一化单股满仓参数(提取模式配置(form, "single"))
-    清理旧交互回测数据()
     stock = form["stock"]
     if progress:
         progress(phase="运行单股回测", completed=0, total=1, unit="股票", message=f"正在回测 {stock}")
     run_dir = 创建运行目录(stock)
     config_dir = 复制配置(run_dir)
     应用表单到配置(config_dir, form)
+    if progress:
+        # 让前端和检查点接口知道本次单股任务的真实结果目录；不能等到
+        # 完成后再依赖页面刷新，否则刷新 POST 可能重复提交回测。
+        progress(run_dir=run_dir, status="running", message=f"已创建回测目录，正在处理 {stock}")
     result = 跑回测(
         stock,
         开始日期=form["start"],
@@ -2642,8 +2952,26 @@ def 运行交互回测(form, progress=None):
     buys = int(result.get("买入次数", 0))
     sells = int(result.get("卖出次数", 0))
     no_trade = buys == 0 and sells == 0
+    final_equity = float(result.get("最终权益", form["capital"]) or form["capital"])
+    final_cash = float(result.get("最终现金", 0) or 0)
+    final_market_value = max(0.0, final_equity - final_cash)
+    final_live = {
+        "当前权益": final_equity,
+        "策略收益率": float(result.get("总收益率", 0) or 0),
+        "最大回撤": float(result.get("最大回撤", 0) or 0),
+        "已平仓胜率": float(result.get("胜率", 0) or 0),
+        "现金": final_cash,
+        "持仓市值": final_market_value,
+        "资金使用率": final_market_value / max(final_equity, 1.0) * 100,
+        "实际买入": buys,
+        "实际卖出": sells,
+        "实际成交": buys + sells,
+    }
     if progress:
-        progress(phase="已完成", completed=1, total=1, unit="股票", trades=buys + sells, message="单股回测完成")
+        progress(
+            phase="已完成", completed=1, total=1, unit="股票",
+            trades=buys + sells, message="单股回测完成", live=final_live,
+        )
     return {
         "status": (
             f"回测完成但无成交：{stock} · {form['start']} 到 {form['end']}"
@@ -2659,6 +2987,7 @@ def 运行交互回测(form, progress=None):
         },
         "report_url": f"/report/{token}",
         "run_dir": run_dir,
+        "live": final_live,
         "active_view": "report",
             "backtest_result": {
             "mode": "单股回测",
@@ -2688,8 +3017,11 @@ def 运行交互回测(form, progress=None):
 
 
 def 解析多股输入(form):
-    if form["stocks"].strip():
-        return 读取多股列表(form["stocks"])
+    # 页面提交使用 multi_stocks；提取模式配置后才会转换为 stocks。
+    # 启动后台任务前也会调用本函数，因此这里兼容两种表单形态。
+    stock_text = form.get("stocks", form.get("multi_stocks", ""))
+    if str(stock_text).strip():
+        return 读取多股列表(stock_text)
     return 读取多股列表(沪深300列表路径)
 
 
@@ -2775,7 +3107,7 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
         selected = [label for module_id, label in items if form.get(f"switch_{category}_{module_id}")]
         config_lines.append(f"<div><b>多股·{category}</b>（{len(selected)}项）：{'、'.join(selected) if selected else '未选择'}</div>")
     config_lines.insert(0, f"<div><b>资金模式</b>：{summary.get('资金模式', '等额独立资金池')}</div>")
-    config_lines.insert(1, f"<div><b>网格加仓模式</b>：{ {'fixed_tranche': '固定分层（实验）', 'linear': '线性递增（实验）', 'multiplier': '倍数加仓（实验）'}.get(summary.get('网格加仓模式', form.get('grid_mode', 'multiplier')), '未识别') }</div>")
+    config_lines.insert(1, f"<div><b>网格加仓模式</b>：{ {'fixed_tranche': '固定分层（实验）', 'linear': '线性递增（2/3/4/5倍）', 'multiplier': '倍数加仓（2/4/8/16倍）', 'lifecycle_budget': '生命周期预算（25/15/20/20/20）'}.get(summary.get('网格加仓模式', form.get('grid_mode', 'multiplier')), '未识别') }</div>")
     audit_by_stock = {}
     legacy_stock_summary = {}
     if summary.get("资金审计"):
@@ -2865,19 +3197,32 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
 <main class="main"><section class="panel stock-panel"><div class="stock-tools"><input id="stockSearch" placeholder="搜索股票代码"><button data-sort="trades">成交优先</button><button data-sort="return">贡献排序</button></div><div class="table-wrap"><table id="stockTable"><thead><tr>{'<th>股票</th><th>组合贡献</th><th>实际买/卖</th><th>期末股数</th><th>组合拦截</th><th>策略收益</th>' if summary.get('资金模式') == '共享账户' else '<th>股票</th><th>收益</th><th>回撤</th><th>买/卖</th><th>期末权益</th>'}</tr></thead><tbody>{''.join(rows)}</tbody></table></div></section><div class="splitter" id="mainSplitter" title="拖动调整股票列表宽度"></div><section class="panel viewer"><iframe name="stock_view" src="{first_stock_url}" title="股票策略决策回放"></iframe></section></main>
 <div class="config-pop" id="configPop"><div class="config-body"><strong>本次多股策略配置</strong>{''.join(config_lines)}</div></div>
 <script>const curve={json.dumps(equity_curve, ensure_ascii=False)};const initial={float(summary.get('组合初始资金', form['capital']))};const money=v=>new Intl.NumberFormat('zh-CN',{{maximumFractionDigits:0}}).format(v);function setupCanvas(id){{const canvas=document.getElementById(id),rect=canvas.getBoundingClientRect(),dpr=window.devicePixelRatio||1;canvas.width=Math.max(1,rect.width*dpr);canvas.height=Math.max(1,rect.height*dpr);const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);return{{canvas,ctx,w:rect.width,h:rect.height}}}}function line(ctx,values,x,y,color,width=2,dash=[]){{ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=width;ctx.setLineDash(dash);values.forEach((v,i)=>{{if(v==null)return;const px=x(i),py=y(v);i?ctx.lineTo(px,py):ctx.moveTo(px,py)}});ctx.stroke();ctx.setLineDash([])}}function grid(ctx,w,h,min,max,format){{ctx.font='10px sans-serif';ctx.fillStyle='#7f8ba0';ctx.strokeStyle='#263248';ctx.lineWidth=1;for(let i=0;i<5;i++){{const y=15+i*(h-32)/4,value=max-(max-min)*i/4;ctx.beginPath();ctx.moveTo(48,y);ctx.lineTo(w-8,y);ctx.stroke();ctx.fillText(format(value),4,y+3)}}}}function drawReturns(){{const{{ctx,w,h}}=setupCanvas('returnChart');if(!curve.length)return;const strategy=curve.map(p=>(p.权益/initial-1)*100),hs=curve.map(p=>p['沪深300权益']?(p['沪深300权益']/initial-1)*100:null),alpha=strategy.map((v,i)=>hs[i]==null?null:v-hs[i]);const vals=[...strategy,...hs,...alpha].filter(Number.isFinite),min=Math.min(...vals,0),max=Math.max(...vals,0),span=max-min||1,x=i=>48+i*(w-58)/Math.max(1,curve.length-1),y=v=>15+(max-v)/span*(h-32);grid(ctx,w,h,min,max,v=>v.toFixed(1)+'%');line(ctx,strategy,x,y,'#7184ff',2.4);line(ctx,hs,x,y,'#a774e8',1.8);line(ctx,alpha,x,y,'#39d6bd',1.4,[5,3]);ctx.fillStyle='#7184ff';ctx.fillText('组合 '+strategy.at(-1).toFixed(2)+'%',52,12);if(hs.at(-1)!=null){{ctx.fillStyle='#a774e8';ctx.fillText('沪深300 '+hs.at(-1).toFixed(2)+'%',145,12);ctx.fillStyle='#39d6bd';ctx.fillText('超额 '+alpha.at(-1).toFixed(2)+'%',260,12)}}}}function drawCapital(){{const{{ctx,w,h}}=setupCanvas('capitalChart');if(!curve.length)return;const cash=curve.map(p=>p.现金),used=curve.map(p=>p['持仓市值']),rate=curve.map(p=>p['资金使用率']*100),max=Math.max(initial,...cash,...used),x=i=>48+i*(w-58)/Math.max(1,curve.length-1),y=v=>15+(max-v)/max*(h-32),yr=v=>15+(100-v)/100*(h-32);grid(ctx,w,h,0,max,v=>money(v/10000)+'万');line(ctx,used,x,y,'#f4bd50',2);line(ctx,cash,x,y,'#39d6bd',1.8);line(ctx,rate,x,yr,'#7184ff',1.4,[4,3]);ctx.fillStyle='#7184ff';ctx.fillText('当前使用率 '+rate.at(-1).toFixed(1)+'%',w-125,12)}}function draw(){{drawReturns();drawCapital()}}window.addEventListener('resize',draw);new ResizeObserver(draw).observe(document.querySelector('.analysis'));draw();document.getElementById('analysisToggle').onclick=e=>{{document.body.classList.toggle('analysis-collapsed');e.target.textContent=document.body.classList.contains('analysis-collapsed')?'展开图表':'收起图表';setTimeout(draw,50)}};const pop=document.getElementById('configPop');document.getElementById('configToggle').onclick=()=>pop.classList.add('open');pop.onclick=e=>{{if(e.target===pop)pop.classList.remove('open')}};document.getElementById('stockSearch').oninput=e=>{{const q=e.target.value.trim();document.querySelectorAll('#stockTable tbody tr').forEach(row=>row.hidden=!row.dataset.stock?.includes(q))}};document.querySelectorAll('[data-sort]').forEach(button=>button.onclick=()=>{{const key=button.dataset.sort,tbody=document.querySelector('#stockTable tbody'),rows=[...tbody.rows];rows.sort((a,b)=>Number(b.dataset[key]||0)-Number(a.dataset[key]||0));rows.forEach(row=>tbody.appendChild(row))}});document.querySelectorAll('#stockTable a').forEach(link=>link.onclick=()=>{{document.querySelectorAll('#stockTable tr').forEach(row=>row.style.background='');link.closest('tr').style.background='#202d47'}});const splitter=document.getElementById('mainSplitter');let resizing=false;splitter.onpointerdown=e=>{{resizing=true;splitter.setPointerCapture(e.pointerId)}};splitter.onpointermove=e=>{{if(!resizing)return;const left=document.querySelector('.main').getBoundingClientRect().left,width=Math.max(270,Math.min(620,e.clientX-left));document.documentElement.style.setProperty('--stock-width',width+'px')}};splitter.onpointerup=()=>resizing=false;</script></body></html>'''
+    # 组合图表采用纵向独立大图；只调整回放页面展示，不改变曲线数据。
+    page = page.replace('<button class="config-button" id="analysisToggle">收起图表</button>', '')
+    page = page.replace('body.analysis-collapsed .analysis{height:0;min-height:0;visibility:hidden}', '')
+    page = page.replace(
+        '</style></head>',
+        '<style>html,body{min-height:100%;height:auto}body{overflow:auto;gap:12px;padding:10px}.analysis{grid-template-columns:1fr;grid-template-rows:repeat(2,minmax(440px,1fr));height:auto;min-height:892px;resize:none;overflow:visible;gap:12px}.chart-card{height:440px;min-height:440px}.main{height:700px;min-height:700px;flex:none}</style></head>',
+        1,
+    )
+    page = page.replace(
+        "document.getElementById('analysisToggle').onclick=e=>{document.body.classList.toggle('analysis-collapsed');e.target.textContent=document.body.classList.contains('analysis-collapsed')?'展开图表':'收起图表';setTimeout(draw,50)};",
+        '',
+    )
     with open(path, "w", encoding="utf-8") as target:
         target.write(page)
 
 
-def 运行多股回测(form, progress=None):
+def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_callback=None):
     form = 提取模式配置(form, "multi")
-    清理旧交互回测数据()
     stocks = 解析多股输入(form)
     if progress:
         progress(phase="准备多股回测", completed=0, total=len(stocks), unit="股票", trades=0, message=f"共 {len(stocks)} 只股票")
     run_dir = 创建运行目录("multi")
     config_dir = 复制配置(run_dir)
     应用表单到配置(config_dir, form)
+    if progress:
+        progress(run_dir=run_dir, status="running", message=f"已创建回测目录，共 {len(stocks)} 只股票")
     fallback_note = ""
     每股资金 = (
         float(form["base_position"])
@@ -2897,7 +3242,39 @@ def 运行多股回测(form, progress=None):
             liquidity_limit=form["liquidity_limit"],
             allow_partial_fill=form.get("allow_partial_fill", True),
             progress_callback=progress,
+            stop_requested=stop_requested,
+            checkpoint_callback=checkpoint_callback,
         )
+        if progress and not shared_run.get("stopped"):
+            progress(
+                phase="整理单票结果", completed=0, total=len(stocks), unit="股票",
+                trades=shared_run.get("live", {}).get("实际成交", 0),
+                message=f"时间轴完成，开始整理 {len(stocks)} 只股票",
+            )
+        if shared_run.get("stopped"):
+            live = shared_run.get("live", {})
+            if progress:
+                progress(
+                    status="stopped", phase="已停止", completed=live.get("已处理时间点", 0),
+                    total=live.get("时间点总数", 0), unit="时间点", live=live,
+                    trades=live.get("实际成交", 0), message="已保存最近一次检查点",
+                )
+            return {
+                "status": "回测已停止，最近检查点可以查看部分结果。",
+                "error": False, "stopped": True, "run_dir": run_dir,
+                "active_view": "interactive", "metrics": {
+                    "total_return": 格式化百分比(live.get("策略收益率", 0) / 100),
+                    "max_drawdown": f"{float(live.get('最大回撤', 0)):.2f}%",
+                    "win_rate": f"{float(live.get('已平仓胜率', 0)):.2f}%",
+                    "final_equity": 格式化金额(live.get("当前权益", form["capital"])),
+                },
+                "backtest_result": {
+                    "mode": "多股回测（已停止，部分结果）",
+                    "sample_count": f"时间点 {live.get('已处理时间点', 0)} / {live.get('时间点总数', 0)}",
+                    "output_name": os.path.basename(run_dir), "rows": [],
+                    "note": "回测已停止，页面显示最近一次检查点；交易核心未被修改。",
+                },
+            }
         details = []
         for result in shared_run["股票结果"]:
             stock = str(result.get("股票代码", ""))
@@ -3048,6 +3425,25 @@ def 运行多股回测(form, progress=None):
     return {
         "status": f"多股回测完成：{len(valid)}/{len(stocks)} 只股票有结果",
         "error": False,
+        "live": {
+            "当前权益": float(summary.get("组合最终权益", form["capital"])),
+            "策略收益率": float(summary.get("组合总收益率", 0)) * 100,
+            "最大回撤": float(summary.get("组合最大回撤", 0)) * 100,
+            "已平仓胜率": float(summary.get("加权胜率", 0)) * 100,
+            "现金": float(summary.get("当前现金", 0)),
+            "资金使用率": (
+                float(summary.get("最大使用资金", 0))
+                / max(float(summary.get("组合初始资金", form["capital"])), 1.0)
+                * 100
+            ),
+            "实际买入": int(summary.get("买入总数", 0)),
+            "实际卖出": int(summary.get("卖出总数", 0)),
+            "实际成交": int(summary.get("总交易数", 0)),
+            "拒绝订单": int(sum(
+                value for key, value in summary.get("资金审计", {}).items()
+                if "拦截" in key
+            )),
+        },
         "metrics": {
             "total_return": 格式化小数百分比(summary.get("组合总收益率", 0)),
             "max_drawdown": f"{float(summary.get('组合最大回撤', 0)) * 100:.2f}%",
@@ -3153,6 +3549,11 @@ def 首页():
         source_prefix = "single" if last_run_form.get("strategy_schema_version") == 2 else last_run_mode
         last_run_form = 统一公共策略表单(last_run_form, source_prefix)
         last_run_form["ui_mode"] = last_run_mode if last_run_mode in ("single", "multi") else "multi"
+        # 页面重启后进度状态在内存中会被清空；使用持久化的最近回测模式
+        # 恢复左侧账户设置，避免多股报告加载后仍显示单股配置。
+        if request.method == "GET" and last_run_mode == "multi":
+            form = copy.deepcopy(last_run_form)
+            form["ui_mode"] = "multi"
     if request.method == "POST":
         try:
             if request.form.get("load_last_run") == "1":
@@ -3231,9 +3632,15 @@ def 首页():
         finally:
             # 无论回测成功、预检查拦截还是异常，都保留用户刚刚提交的选择。
             保存最近工作台配置(form)
-    elif (读取回测进度().get("status") == "completed"
-          and 读取回测进度().get("mode") == "multi"
-          and 最近多股报告["token"]):
+    elif (最近多股报告["token"]
+          and (last_run_mode == "multi"
+               or (读取回测进度().get("status") == "completed"
+                   and 读取回测进度().get("mode") == "multi"))):
+        # 最近完成的是多股回测时，页面表单也恢复到多股账户，避免
+        # 回测结果已切换而左侧仍停留在单股设置。
+        if isinstance(last_run_form, dict) and last_run_form:
+            form = 统一公共策略表单(last_run_form, "multi")
+            form["ui_mode"] = "multi"
         result_path = os.path.join(最近多股报告["run_dir"] or "", "多股回测结果.json")
         try:
             with open(result_path, encoding="utf-8") as source:
@@ -3337,20 +3744,58 @@ def 回测进度接口():
     return jsonify(读取回测进度())
 
 
+@应用.route("/api/backtest-live")
+def 回测实时指标接口():
+    state = 读取回测进度()
+    return jsonify({
+        "task_id": state.get("task_id"),
+        "status": state.get("status"),
+        "phase": state.get("phase"),
+        "live": state.get("live", {}),
+        "updated_at": state.get("updated_at"),
+    })
+
+
+@应用.route("/api/backtest-stop", methods=["POST"])
+def 停止回测接口():
+    with 回测进度锁:
+        if 回测进度.get("status") not in {"starting", "running", "finalizing"}:
+            return jsonify({"ok": False, "message": "当前没有正在运行的回测。"}), 409
+        回测停止事件.set()
+        回测进度["status"] = "stopping"
+        回测进度["phase"] = "等待当前时间点完成"
+        回测进度["message"] = "正在保存最近检查点"
+    return jsonify({"ok": True, "message": "已请求停止，当前时间点完成后停止。"})
+
+
+@应用.route("/api/backtest-checkpoint")
+def 回测检查点接口():
+    task_id = 读取回测进度().get("task_id")
+    with 回测检查点锁:
+        payload = copy.deepcopy(回测检查点.get(task_id, {}))
+    if not payload:
+        checkpoint_path = 读取回测进度().get("checkpoint_path")
+        if checkpoint_path and os.path.isfile(checkpoint_path):
+            try:
+                with open(checkpoint_path, encoding="utf-8") as source:
+                    payload = json.load(source)
+            except (OSError, ValueError, json.JSONDecodeError):
+                payload = {}
+    return jsonify(payload)
+
+
 @应用.route("/report/<token>")
 def 查看报告(token):
     if token != 最近报告["token"] or not 最近报告["path"] or not os.path.exists(最近报告["path"]):
         return Response("报告不存在或已失效。", status=404, content_type="text/plain; charset=utf-8")
-    with open(最近报告["path"], encoding="utf-8") as source:
-        return Response(source.read(), content_type="text/html; charset=utf-8")
+    return send_file(最近报告["path"], mimetype="text/html")
 
 
 @应用.route("/multi-report/<token>")
 def 查看多股报告(token):
     if token != 最近多股报告["token"] or not 最近多股报告["path"] or not os.path.exists(最近多股报告["path"]):
         return Response("多股报告不存在或已失效。", status=404, content_type="text/plain; charset=utf-8")
-    with open(最近多股报告["path"], encoding="utf-8") as source:
-        return Response(source.read(), content_type="text/html; charset=utf-8")
+    return send_file(最近多股报告["path"], mimetype="text/html")
 
 
 @应用.route("/multi/<token>/stock/<stock>")
@@ -3361,8 +3806,7 @@ def 查看多股单票回放(token, stock):
     path = os.path.join(最近多股报告["run_dir"], "股票", safe_stock, "策略决策回放.html")
     if not os.path.isfile(path):
         return Response("该股票没有可用回放。", status=404, content_type="text/plain; charset=utf-8")
-    with open(path, encoding="utf-8") as source:
-        return Response(source.read(), content_type="text/html; charset=utf-8")
+    return send_file(path, mimetype="text/html")
 
 
 @应用.route("/output/<path:filename>")

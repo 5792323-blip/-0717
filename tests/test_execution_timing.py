@@ -8,6 +8,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from 策略引擎.规则执行器 import 规则执行器
+from 因子模块.grid_addon import 网格加仓
 
 
 def make_bar(**overrides):
@@ -28,6 +29,100 @@ def make_bar(**overrides):
     }
     data.update(overrides)
     return pd.Series(data)
+
+
+def test_grid_retracement_uses_intrabar_low_not_close():
+    factor = 网格加仓({"最大加仓次数": 3, "首次回撤阈值": 0.05})
+    position = {"网格_首笔股数": 100, "网格_基准最高价": 100.0}
+
+    result = factor.加仓前检查(
+        position,
+        {"前复权_最低": 94.9, "前复权_收盘": 99.0},
+        {},
+    )
+
+    assert result["触发加仓"] is True
+    assert result["触发价"] == 95.0
+
+
+def test_grid_retracement_levels_are_linear_multiples_of_initial_threshold():
+    factor = 网格加仓({"最大加仓次数": 5, "首次回撤阈值": 0.03})
+
+    for completed, expected in enumerate((97.0, 94.0, 91.0, 88.0, 85.0)):
+        position = {
+            "网格_首笔股数": 100,
+            "网格_基准最高价": 100.0,
+            "网格_已触发次数": completed,
+        }
+        result = factor.加仓前检查(position, {"前复权_最低": expected}, {})
+        assert result["触发加仓"] is True
+        assert result["触发价"] == expected
+
+
+def test_existing_linear_and_multiplier_grid_share_sequences_are_unchanged():
+    position = {"网格_首笔股数": 100, "网格_基准最高价": 100.0}
+    bar = {"前复权_最低": 0.01}
+
+    linear = 网格加仓({"最大加仓次数": 4, "首次回撤阈值": 0.03, "加仓模式": "linear"})
+    multiplier = 网格加仓({
+        "最大加仓次数": 4, "首次回撤阈值": 0.03,
+        "加仓模式": "multiplier", "倍数": 2,
+    })
+
+    assert [
+        linear.加仓前检查({**position, "网格_已触发次数": level}, bar, {})["加仓股数"]
+        for level in range(4)
+    ] == [200, 300, 400, 500]
+    assert [
+        multiplier.加仓前检查({**position, "网格_已触发次数": level}, bar, {})["加仓股数"]
+        for level in range(4)
+    ] == [200, 400, 800, 1600]
+
+
+def test_lifecycle_budget_grid_allocates_l1_to_l4_and_stops():
+    factor = 网格加仓({
+        "最大加仓次数": 9,
+        "首次回撤阈值": 0.03,
+        "加仓模式": "lifecycle_budget",
+        "生命周期预算金额": 1_000_000,
+        "生命周期预算比例": [0.25, 0.15, 0.20, 0.20, 0.20],
+    })
+    position = {"网格_首笔股数": 2500, "网格_基准最高价": 100.0}
+    bar = {"前复权_最低": 0.01}
+
+    results = [
+        factor.加仓前检查({**position, "网格_已触发次数": level}, bar, {})
+        for level in range(5)
+    ]
+
+    assert [result["加仓金额"] for result in results[:4]] == [150000, 200000, 200000, 200000]
+    assert results[4]["触发加仓"] is False
+
+
+def test_same_bar_buy_rejects_when_high_does_not_reach_sentinel():
+    executor = object.__new__(规则执行器)
+    executor.买入时机模式 = "same_bar_entry"
+    executor.买入溢价 = 1.0
+    executor.上一根_不复权收盘 = 62.0
+    executor.价格序列 = []
+    executor.本根决策 = {"决策记录": {"买入": {}}}
+    executor.交易记录器 = SimpleNamespace(
+        记录信号K线=lambda **kwargs: None,
+        设置哨兵价=lambda value: None,
+    )
+
+    result = executor._执行买入(
+        规则=None,
+        K线数据=make_bar(前复权_开盘=62.78, 前复权_最高=63.35),
+        当前索引=1,
+        当前RSI=30.0,
+        哨兵价=64.95,
+        信号类型="网格加仓 L1",
+        信号质量分=1.0,
+    )
+
+    assert result is False
+    assert "未达到哨兵价" in executor.本根决策["动作原因"]
 
 
 def make_executor():
@@ -197,6 +292,22 @@ def test_strict_breakout_requires_next_valid_price_above_previous_high():
     assert executor.本根决策["买入信号"][0]["满足"] is True
 
 
+def test_existing_position_blocks_normal_rsi_buy_when_grid_is_disabled():
+    executor = make_executor()
+    executor.最大总持仓数 = 10
+    executor.当前持仓 = {"600519": {"股数": 100}}
+    executor.因子管理器 = None
+    executor.本根决策 = {"买入信号": [], "过滤检查": [], "决策记录": {}, "动作原因": ""}
+    calls = []
+    executor._执行买入 = lambda **kwargs: calls.append(kwargs) or True
+
+    executor._检查买入(make_bar(前复权_最高=120.0, 不复权_最高=120.0), 20)
+
+    assert calls == []
+    assert executor.本根决策["动作原因"] == "已有持仓且网格未启用，禁止继续买入"
+    assert executor.本根决策["决策记录"]["买入"]["结果"] == "持仓期间禁止普通买入"
+
+
 def test_non_tradable_bars_are_blocked():
     executor = make_executor()
     assert executor._行情不可交易(make_bar(成交量=0)) is True
@@ -337,6 +448,55 @@ def test_single_lot_overrides_signal_amount_limit():
         信号质量分=1.0,
     ) is True
     assert executor.当前持仓["600519"]["股数"] == 100
+
+
+def test_lifecycle_grid_budget_is_converted_to_lots_at_execution_price():
+    executor = make_executor()
+    executor.买入溢价 = 1.0
+    executor.佣金率 = 0.0
+    executor.过户费率 = 0.0
+    executor.当前持仓 = {
+        "600519": {
+            "买入时间": 0, "买入价": 100.0, "前复权成交价": 100.0,
+            "成本": 100000.0, "总成本": 100000.0, "买入费用": 0.0,
+            "股数": 1000, "最高价": 110.0, "网格_首笔股数": 1000,
+            "网格_已加仓次数": 0, "网格_基准最高价": 110.0,
+        }
+    }
+    executor.当前现金 = 500000.0
+    executor.已买入K线数 = 2
+    executor.基础单只金额 = 250000.0
+    executor.最大单只比例 = 1.0
+    executor.最大总仓位比例 = 1.0
+    executor.现金底线比例 = 0.0
+    executor.哨兵价形成类型 = "RSI上穿20"
+    executor.交易记录器 = SimpleNamespace(
+        记录信号K线=lambda **kwargs: None,
+        设置哨兵价=lambda value: None,
+        记录买入=lambda **kwargs: None,
+        更新交易记录=lambda *args, **kwargs: None,
+        买入序号=1,
+    )
+    executor.预测器 = None
+    executor.因子管理器 = None
+    executor._获取买入规则 = lambda signal: {"类型": signal}
+    executor.本根决策 = {"决策记录": {"买入": {}}}
+
+    assert executor._执行买入(
+        规则=None,
+        K线数据=make_bar(
+            前复权_开盘=100.0, 前复权_最高=110.0, 前复权_最低=99.0,
+            不复权_开盘=100.0, 不复权_最高=110.0, 不复权_最低=99.0,
+        ),
+        当前索引=2,
+        当前RSI=35.0,
+        哨兵价=100.0,
+        信号类型="网格加仓 L1",
+        信号质量分=1.0,
+        指定金额=150000.0,
+        成交模式="pullback",
+    ) is True
+    assert executor.当前持仓["600519"]["股数"] == 2500
 
 
 def test_sell_rule_uses_previous_completed_close():

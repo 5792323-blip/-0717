@@ -1,6 +1,7 @@
 import os
 import shutil
 import re
+import json
 from unittest.mock import patch
 
 import yaml
@@ -9,6 +10,7 @@ from 运行程序.interactive_backtest_app import (
     应用表单到配置, 应用, 构建默认表单, 构建工作台表单,
     保存最近工作台配置, 获取当前单票回放地址, 获取多股票回放地址,
     运行交互回测, 提取模式配置, 规范化表单, 预检查无成交风险,
+    _保存回测检查点, 回测检查点,
 )
 
 
@@ -120,6 +122,34 @@ def test_grid_initial_ratio_applies_to_non_full_position_first_request(tmp_path)
     assert parameters["仓位参数"]["基础单只金额"] == 1000000
 
 
+def test_lifecycle_budget_grid_forces_first_ratio_and_persists_budget(tmp_path):
+    snapshot = tmp_path / "config"
+    shutil.copytree(CONFIG, snapshot)
+    form = 构建默认表单()
+    form.update({
+        "ui_mode": "single",
+        "single_full_position_mode": False,
+        "single_capital": 10000000,
+        "single_base_position": 1000000,
+        "single_grid_mode": "lifecycle_budget",
+        "single_grid_initial_ratio": 0.8,
+        "single_switch_扩展因子_grid_addon": True,
+    })
+
+    normalized = 规范化表单(form)
+    assert normalized["single_grid_initial_ratio"] == 0.25
+    应用表单到配置(snapshot, 提取模式配置(normalized, "single"))
+
+    positions = yaml.safe_load((snapshot / "仓位配置.yaml").read_text(encoding="utf-8"))
+    factors = yaml.safe_load((snapshot / "因子配置.yaml").read_text(encoding="utf-8"))
+    grid = factors["因子列表"]["grid_addon"]["参数"]
+    assert positions["基准仓位"]["基础单只金额"] == 250000
+    assert grid["加仓模式"] == "lifecycle_budget"
+    assert grid["最大加仓次数"] == 4
+    assert grid["生命周期预算金额"] == 1000000
+    assert grid["生命周期预算比例"] == [0.25, 0.15, 0.2, 0.2, 0.2]
+
+
 def test_next_bar_entry_does_not_enable_same_bar_entry_when_saved(tmp_path):
     snapshot = tmp_path / "config"
     shutil.copytree(CONFIG, snapshot)
@@ -158,6 +188,7 @@ def test_save_config_persists_execution_timing_to_formal_config(tmp_path):
         })
         data = {key: value for key, value in form.items()}
         data.update({
+            "ui_mode": "single",
             "save_config": "1",
             "single_entry_timing": "precomputed_stop_entry",
             "single_switch_核心模块_same_bar_entry": "",
@@ -233,11 +264,14 @@ def test_home_page_renders():
     assert "下一根K线执行" in body
     assert 'name="single_switch_扩展因子_xgboost_trend"' in body
     assert 'name="single_switch_扩展因子_xgboost_trend"' in body and "disabled" in body
-    assert re.search(r"买入信号规则</span><span class=\"fold-count\">4 项（\d+项）</span>", body)
-    assert re.search(r"卖出与退出风控</span><span class=\"fold-count\">12 项（\d+项）</span>", body)
-    assert re.search(r"买入前过滤因子</span><span class=\"fold-count\">13 项（\d+项）</span>", body)
-    assert re.search(r"实验扩展因子</span><span class=\"fold-count\">17 项（\d+项）</span>", body)
-    assert re.search(r"成交执行与核心模块</span><span class=\"fold-count\">6 项（\d+项）</span>", body)
+    assert re.search(r"① 入场信号</span><span class=\"fold-count\">4 项（\d+项）</span>", body)
+    assert re.search(r"② 入场确认与过滤</span><span class=\"fold-count\">19 项（\d+项）</span>", body)
+    assert "③ 仓位与网格" in body
+    assert "④ 成交执行" in body
+    assert "⑤ 卖出与持仓管理" in body
+    assert "⑥ 实验与研究" in body
+    assert 'id="selectedStrategy"' in body
+    assert "updateSelectedStrategy" in body
 
 
 def test_backtest_progress_endpoint_returns_idle_state():
@@ -246,6 +280,31 @@ def test_backtest_progress_endpoint_returns_idle_state():
     payload = response.get_json()
     assert payload["status"] in {"idle", "running", "completed", "failed"}
     assert {"completed", "total", "trades", "phase"}.issubset(payload)
+
+
+def test_live_metrics_endpoint_returns_read_only_snapshot():
+    response = 应用.test_client().get("/api/backtest-live")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert {"status", "phase", "live"}.issubset(payload)
+
+
+def test_stop_endpoint_rejects_when_no_backtest_is_running():
+    response = 应用.test_client().post("/api/backtest-stop")
+    assert response.status_code == 409
+
+
+def test_checkpoint_is_readable_and_keeps_recent_curve(tmp_path):
+    task_id = "checkpoint-test"
+    run_dir = str(tmp_path / "run")
+    _保存回测检查点(
+        task_id, run_dir, completed=2, total=10, phase="共享账户时间轴回测",
+        live={"当前权益": 101000}, curve_point={"日期": "2020-01-02", "权益": 101000},
+    )
+    payload = json.loads((tmp_path / "run" / "checkpoint" / "latest.json").read_text(encoding="utf-8"))
+    assert payload["completed"] == 2
+    assert payload["live"]["当前权益"] == 101000
+    assert payload["曲线"][-1]["权益"] == 101000
 
 
 def test_replay_uses_single_pan_zoom_workbench_template():
@@ -323,6 +382,25 @@ def test_single_full_position_mode_passes_runtime_flag(tmp_path):
     apply_config.assert_called_once()
     assert run_backtest.call_args.kwargs["运行参数"]["单股全仓模式"] is True
     assert run_backtest.call_args.kwargs["运行参数"]["流动性上限比例"] == form["single_liquidity_limit"]
+
+
+def test_single_backtest_publishes_run_directory_before_execution(tmp_path):
+    form = 构建默认表单()
+    progress = []
+    with patch("运行程序.interactive_backtest_app.创建运行目录", return_value=str(tmp_path)), \
+         patch("运行程序.interactive_backtest_app.复制配置", return_value=str(tmp_path)), \
+         patch("运行程序.interactive_backtest_app.清理旧交互回测数据"), \
+         patch("运行程序.interactive_backtest_app.应用表单到配置"), \
+         patch("运行程序.interactive_backtest_app.跑回测", return_value={
+             "总收益率": 0.0, "最大回撤": 0.0, "胜率": 0.0,
+             "最终权益": 10000000, "买入次数": 0, "卖出次数": 0,
+             "原始K线数据": None,
+         }), \
+         patch("运行程序.interactive_backtest_app.保存结果"), \
+         patch("运行程序.interactive_backtest_app.生成报告"):
+        运行交互回测(form, progress=lambda **changes: progress.append(changes))
+
+    assert any(item.get("run_dir") == str(tmp_path) for item in progress)
 
 
 def test_precheck_blocks_zero_trade_risk():
