@@ -3566,6 +3566,30 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
             }
         details = []
         for result in shared_run["股票结果"]:
+            if stop_requested and stop_requested():
+                live = shared_run.get("live", {})
+                if progress:
+                    progress(
+                        status="stopped", phase="已停止", completed=live.get("已处理时间点", 0),
+                        total=live.get("时间点总数", 0), unit="时间点", live=live,
+                        trades=live.get("实际成交", 0), message="已停止整理单票结果，已保存最近一次检查点",
+                    )
+                return {
+                    "status": "回测已停止，最近检查点可以查看部分结果。",
+                    "error": False, "stopped": True, "run_dir": run_dir,
+                    "active_view": "interactive", "metrics": {
+                        "total_return": 格式化百分比(live.get("策略收益率", 0) / 100),
+                        "max_drawdown": f"{float(live.get('最大回撤', 0)):.2f}%",
+                        "win_rate": f"{float(live.get('已平仓胜率', 0)):.2f}%",
+                        "final_equity": 格式化金额(live.get("当前权益", form["capital"])),
+                    },
+                    "backtest_result": {
+                        "mode": "多股回测（已停止，部分结果）",
+                        "sample_count": f"时间点 {live.get('已处理时间点', 0)} / {live.get('时间点总数', 0)}",
+                        "output_name": os.path.basename(run_dir), "rows": [],
+                        "note": "回测已停止，页面显示最近一次检查点；交易核心未被修改。",
+                    },
+                }
             stock = str(result.get("股票代码", ""))
             result_dir = stock_dirs[stock]
             report_path = _保存多股单票结果(result, result_dir)

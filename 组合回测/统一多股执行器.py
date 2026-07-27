@@ -323,6 +323,10 @@ def 运行共享账户回测(
                 curve_point={**curve[-1], **live},
             )
 
+    # 停止请求可能恰好发生在最后一个时间点处理完成之后；循环没有
+    # 下一轮时不会再次命中开头的检查，因此这里补一次最终检查。
+    if stop_requested and stop_requested():
+        stopped = True
     elapsed = perf_counter() - started
     snapshot = _读取配置快照(config_dir)
     results = [
