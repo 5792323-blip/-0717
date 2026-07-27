@@ -30,6 +30,14 @@ def 设置关闭信号(config_dir, disabled_identifier=None):
         item["启用"] = item["英文标识"] != disabled_identifier
     with open(path, "w", encoding="utf-8") as target:
         yaml.safe_dump(config, target, allow_unicode=True, sort_keys=False)
+    switch_path = os.path.join(config_dir, "模块开关配置.yaml")
+    with open(switch_path, encoding="utf-8") as source:
+        switches = yaml.safe_load(source)
+    for item in switches["模块类别"]["买入规则"].values():
+        if item.get("模块", "").endswith(f".{disabled_identifier}"):
+            item["启用"] = False
+    with open(switch_path, "w", encoding="utf-8") as target:
+        yaml.safe_dump(switches, target, allow_unicode=True, sort_keys=False)
 
 
 def 回测(config_dir, stocks, start, end, workers):

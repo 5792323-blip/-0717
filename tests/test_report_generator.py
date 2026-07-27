@@ -67,6 +67,9 @@ def test_kline_replay_generates_pan_zoom_workbench(tmp_path):
     assert "绿线亏损" in page
     assert "本根实际检查哨兵价" in page
     assert "收盘后形成的下一根哨兵价" in page
+    assert "RSI 信号贡献分析" in page
+    assert "首次开仓的 RSI 信号归类" in page
+    assert "const RSI_SIGNALS=['RSI上穿20','RSI上穿30','RSI上穿均线','RSI上穿70']" in page
     assert '"哨兵价": null' in page
     assert "allBarsMode" not in page
     assert "%%K线JSON%%" not in page

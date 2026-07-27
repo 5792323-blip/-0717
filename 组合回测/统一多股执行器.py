@@ -96,7 +96,7 @@ def _整理股票结果(session, initial_capital, config_snapshot, elapsed):
 def 运行共享账户回测(
     stocks, start, end, capital, config_dir, liquidity_limit=0.01,
     allow_partial_fill=True, progress_callback=None, stop_requested=None,
-    checkpoint_callback=None,
+    checkpoint_callback=None, benchmark_config=None,
 ):
     """在一个共享账户中直接运行多只股票，不产生候选成交。"""
     started = perf_counter()
@@ -155,10 +155,14 @@ def 运行共享账户回测(
     max_drawdown = 0.0
     stopped = False
 
-    hs_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "数据模块", "大盘数据", "hs300_日K线.pkl",
-    )
+    default_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    benchmark_config = benchmark_config or {
+        "name": "沪深300", "benchmark_path": os.path.join(default_root, "数据模块", "大盘数据", "hs300_日K线.pkl"),
+        "curve_key": "沪深300权益", "return_key": "沪深300收益率",
+    }
+    benchmark_key = benchmark_config["curve_key"]
+    return_key = benchmark_config["return_key"]
+    hs_path = benchmark_config["benchmark_path"]
     hs_map = {}
     if os.path.exists(hs_path):
         try:
@@ -249,7 +253,8 @@ def 运行共享账户回测(
         live = {
             "当前权益": round(float(point["权益"]), 2),
             "策略收益率": round(strategy_return, 6),
-            "沪深300收益率": round(benchmark_return, 6) if benchmark_return is not None else None,
+            "基准名称": benchmark_config["name"],
+            return_key: round(benchmark_return, 6) if benchmark_return is not None else None,
             "超额收益率": round(strategy_return - benchmark_return, 6) if benchmark_return is not None else None,
             "当前回撤": round(drawdown * 100, 6),
             "最大回撤": round(max_drawdown * 100, 6),
@@ -269,7 +274,7 @@ def 运行共享账户回测(
             "资金使用率": round(float(point["资金使用率"]) * 100, 6),
             "持仓数量": int(point.get("持仓数量", 0) or 0),
         }
-        curve[-1].update({"沪深300权益": round(hs_value / hs_first * capital, 2) if hs_first and hs_value else None})
+        curve[-1].update({benchmark_key: round(hs_value / hs_first * capital, 2) if hs_first and hs_value else None})
         if progress_callback and (时间轴索引 == 1 or 时间轴索引 == len(timestamps) or 时间轴索引 % max(1, len(timestamps) // 100) == 0):
             progress_callback(
                 phase="共享账户时间轴回测", completed=时间轴索引, total=len(timestamps),
@@ -295,6 +300,7 @@ def 运行共享账户回测(
         "时间点总数": len(timestamps),
         "当前权益": round(float(account.权益()), 2),
         "策略收益率": round((float(account.权益()) / max(float(capital), 1.0) - 1.0) * 100, 6),
+        "基准名称": benchmark_config["name"],
         "最大回撤": round(max_drawdown * 100, 6),
         "实际买入": actual_buys,
         "实际卖出": actual_sells,

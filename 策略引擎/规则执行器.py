@@ -385,6 +385,7 @@ class 规则执行器:
                     "类型": 信号['名称'],
                     "基础质量分": 信号.get('基础质量分', 0.5),
                     "单笔买入上限": 信号.get('单笔买入上限'),
+                    "信号资金系数": float(信号.get('信号资金系数', 1.0) or 1.0),
                     "需要均线上涨确认": 信号.get('需要均线上涨确认', False),
                     "确认K线数":信号.get('确认K线数', 0),
                 })
@@ -541,6 +542,24 @@ class 规则执行器:
             except Exception as e:
                 状态[因子['名称']] = {'错误': str(e)}
         return 状态
+
+    def _获取RSI信号阈值(self, 信号类型, 默认阈值):
+        """Read an optional regime threshold without changing legacy defaults."""
+        factor = next(
+            (item for item in self.过滤因子列表
+             if item.get("名称") == "rsi_regime_adaptive_filter"),
+            None,
+        )
+        if not factor:
+            return 默认阈值
+        try:
+            module = factor["模块"]
+            value = module.获取RSI阈值(
+                信号类型, self.过滤运行状态, factor.get("配置", {})
+            )
+            return float(value) if value is not None else 默认阈值
+        except (AttributeError, TypeError, ValueError, KeyError):
+            return 默认阈值
 
     def _生成哨兵量价快照(self):
         """保存哨兵形成时的量价证据；不修改哨兵价和订单参数。"""
@@ -830,21 +849,26 @@ class 规则执行器:
             上一根RSI = 计算WilderRSI(历史价格[-15:])
             if 上一根RSI is None or pd.isna(上一根RSI):
                 return
-            if float(上一根RSI) < 20:
-                目标RSI = 20
+            阈值20 = self._获取RSI信号阈值("RSI上穿20", 20)
+            阈值30 = self._获取RSI信号阈值("RSI上穿30", 30)
+            阈值70 = self._获取RSI信号阈值("RSI上穿70", 70)
+            if float(上一根RSI) < 阈值20:
+                目标RSI = 阈值20
             elif self.上一根_RSI_MA is not None and float(上一根RSI) < float(self.上一根_RSI_MA):
                 目标RSI = float(self.上一根_RSI_MA)
-            elif float(上一根RSI) < 30:
-                目标RSI = 30
-            elif float(上一根RSI) < 70:
-                目标RSI = 70
+            elif float(上一根RSI) < 阈值30:
+                目标RSI = 阈值30
+            elif float(上一根RSI) < 阈值70:
+                目标RSI = 阈值70
             else:
                 return
             结果 = 计算Wilder上涨反推价(历史价格[-15:], 目标RSI)
             反推价 = 结果.get('目标价位')
-            信号类型 = {
-                20: 'RSI上穿20', 30: 'RSI上穿30', 70: 'RSI上穿70',
-            }.get(结果.get('目标RSI'), 'RSI上穿均线')
+            target = float(结果.get('目标RSI'))
+            signal_by_threshold = {
+                阈值20: 'RSI上穿20', 阈值30: 'RSI上穿30', 阈值70: 'RSI上穿70',
+            }
+            信号类型 = signal_by_threshold.get(target, 'RSI上穿均线')
             if 反推价 is None:
                 return
             最新价格 = float(历史价格[-1])
@@ -853,7 +877,7 @@ class 规则执行器:
             if not any(r.get('类型') == 信号类型 for r in self.买入规则列表):
                 # RSI均线目标值在历史配置中可能被序列化为浮点数；
                 # 归属仍按“上穿均线”处理，而不是误判为未启用。
-                if 结果.get('目标RSI') != 20 and 结果.get('目标RSI') != 30 and 结果.get('目标RSI') != 70:
+                if target not in signal_by_threshold:
                     信号类型 = 'RSI上穿均线'
                 if not any(r.get('类型') == 信号类型 for r in self.买入规则列表):
                     return
@@ -1012,6 +1036,7 @@ class 规则执行器:
         self.本根决策["决策记录"]["买入"].update({
             "基础质量分": 当前买入规则.get("基础质量分"),
             "单笔买入上限": 当前买入规则.get("单笔买入上限"),
+            "信号资金系数": 当前买入规则.get("信号资金系数", 1.0),
         })
         
         # ---- 过滤因子检查（统一在这里拦截） ----
@@ -1059,6 +1084,8 @@ class 规则执行器:
             self.全局状态.update({
                 "信号质量": 信号质量分,
                 "总权益": self.当前现金 + 当前持仓市值,
+                "当前持仓市值": 当前持仓市值,
+                "信号类型": self.哨兵价形成类型,
             })
             因子结果 = self.因子管理器.买入前检查(K线数据, self.全局状态)
             self._本根扩展因子结果 = 因子结果
@@ -1293,6 +1320,8 @@ class 规则执行器:
         一手金额 = 买入价 * 最低交易单位
         当前规则 = self._获取买入规则(信号类型 or self.哨兵价形成类型)
         单笔上限 = 当前规则.get('单笔买入上限') if 当前规则 else None
+        信号资金系数 = float(当前规则.get('信号资金系数', 1.0) or 1.0) if 当前规则 else 1.0
+        信号资金系数 = max(0.01, min(信号资金系数, 1.0))
         目标金额 = self.基础单只金额
         if 建议仓位 is not None:
             if float(建议仓位) <= 0:
@@ -1301,6 +1330,8 @@ class 规则执行器:
             目标金额 = float(建议仓位)
         if 单笔上限 is not None and 指定股数 is None and 指定金额 is None:
             目标金额 = min(目标金额, float(单笔上限))
+        if not 网格加仓 and 指定股数 is None and 指定金额 is None:
+            目标金额 *= 信号资金系数
         当前估值价 = 不复权开盘
         结构性可用金额, 账户限制 = self._计算账户结构性可用金额(当前估值价)
         # 暂时屏蔽成交额流动性限制。页面仍保留该参数，便于后续恢复；
@@ -1486,6 +1517,7 @@ class 规则执行器:
                 "最高价": 买入基准前复权,  # 初始化为买入价，后市上涨时更新
                 # 记录开仓信号信息，供加仓/过滤复用
                 "信号类型": 信号类型 or self.哨兵价形成类型,
+                "信号资金系数": 信号资金系数,
                 "信号质量分": 信号质量,
                 # 网格加仓状态（不含首次开仓）
                 "网格_首笔股数": 股数,
@@ -1595,18 +1627,21 @@ class 规则执行器:
         _上穿阈值 = None
         _上穿类型 = None
         
-        if 上一根RSI < 20 and 当前RSI >= 20:
-            _上穿阈值 = 20
+        阈值20 = self._获取RSI信号阈值("RSI上穿20", 20)
+        阈值30 = self._获取RSI信号阈值("RSI上穿30", 30)
+        阈值70 = self._获取RSI信号阈值("RSI上穿70", 70)
+        if 上一根RSI < 阈值20 and 当前RSI >= 阈值20:
+            _上穿阈值 = 阈值20
             _上穿类型 = "RSI上穿20"
         elif (self.上一根_RSI_MA is not None and 
               上一根RSI < self.上一根_RSI_MA and 当前RSI >= self.上一根_RSI_MA):
             _上穿阈值 = self.上一根_RSI_MA
             _上穿类型 = "RSI上穿均线"
-        elif 上一根RSI < 30 and 当前RSI >= 30:
-            _上穿阈值 = 30
+        elif 上一根RSI < 阈值30 and 当前RSI >= 阈值30:
+            _上穿阈值 = 阈值30
             _上穿类型 = "RSI上穿30"
-        elif 上一根RSI < 70 and 当前RSI >= 70:
-            _上穿阈值 = 70
+        elif 上一根RSI < 阈值70 and 当前RSI >= 阈值70:
+            _上穿阈值 = 阈值70
             _上穿类型 = "RSI上穿70"
         
         _本根实际上穿 = _上穿阈值 is not None
@@ -1620,14 +1655,14 @@ class 规则执行器:
             try:
                 _当前值 = float(当前RSI)
                 _均线值 = float(self.上一根_RSI_MA) if self.上一根_RSI_MA is not None else None
-                if _当前值 < 20:
-                    _上穿阈值, _上穿类型 = 20, "RSI上穿20"
-                elif _当前值 < 30:
-                    _上穿阈值, _上穿类型 = 30, "RSI上穿30"
+                if _当前值 < 阈值20:
+                    _上穿阈值, _上穿类型 = 阈值20, "RSI上穿20"
+                elif _当前值 < 阈值30:
+                    _上穿阈值, _上穿类型 = 阈值30, "RSI上穿30"
                 elif _均线值 is not None and _当前值 < _均线值:
                     _上穿阈值, _上穿类型 = _均线值, "RSI上穿均线"
-                elif _当前值 < 70:
-                    _上穿阈值, _上穿类型 = 70, "RSI上穿70"
+                elif _当前值 < 阈值70:
+                    _上穿阈值, _上穿类型 = 阈值70, "RSI上穿70"
             except (TypeError, ValueError):
                 pass
 
@@ -1890,6 +1925,7 @@ class 规则执行器:
 
     def _检查加仓(self, 持仓, K线数据, 当前索引, 股票_code=None):
         """检查已有持仓是否触发加仓（扩展因子：加仓前检查）。"""
+        触发列表 = []
         if not 持仓 or not self.因子管理器 or not self.因子管理器.已启用因子:
             return
         if self._行情不可交易(K线数据):
@@ -1900,6 +1936,8 @@ class 规则执行器:
         实际代码 = 股票_code if 股票_code is not None else K线数据.get('股票代码', '600519')
         if 实际代码 not in self.当前持仓:
             return
+        self.全局状态["当前索引"] = 当前索引
+        self.全局状态["当前持仓"] = self.当前持仓
 
         # 首笔开仓发生在本根时，禁止网格在同一根K线立即再加仓。
         # 网格基准最高价、当根最低价和扩展因子状态都应从下一根已完成
@@ -1945,6 +1983,7 @@ class 规则执行器:
                 '冷却期剩余K线': self.冷却期剩余K线,
                 '有底背离': self.有底背离,
                 '有顶背离': self.有顶背离,
+                '已有持仓': True,
             }
             过滤状态.update(getattr(self, '过滤运行状态', {}))
             过滤状态['哨兵量价快照'] = getattr(self, '哨兵量价快照', {})
@@ -1972,7 +2011,7 @@ class 规则执行器:
             except Exception:
                 pass
 
-        触发列表 = self.因子管理器.加仓前检查(持仓, K线数据, self.全局状态)
+            触发列表 = self.因子管理器.加仓前检查(持仓, K线数据, self.全局状态)
         # 本根同时达到回撤档位并形成新哨兵价时，允许当根完成确认成交；
         # 只有没有新哨兵价时，网格回撤才保留为待确认状态。
         # 已有待加仓单时，只要本根重新出现有效买入信号，即使没有新的网格
@@ -2014,6 +2053,17 @@ class 规则执行器:
                 加仓金额 = float(触发.get("加仓金额")) if 触发.get("加仓金额") is not None else None
             except (TypeError, ValueError):
                 加仓金额 = None
+            # Grid follow-ups inherit the opening signal's budget coefficient.
+            try:
+                加仓资金系数 = max(0.01, min(
+                    float(持仓.get("信号资金系数", 1.0) or 1.0), 1.0
+                ))
+            except (TypeError, ValueError):
+                加仓资金系数 = 1.0
+            if 加仓金额 is not None:
+                加仓金额 *= 加仓资金系数
+            if 加仓股数 is not None:
+                加仓股数 = int(加仓股数 * 加仓资金系数 / 100) * 100
             生命周期预算 = (
                 触发.get("网格模式") == "lifecycle_budget"
                 or ((加仓金额 or 0) > 0 and (加仓股数 or 0) <= 0)

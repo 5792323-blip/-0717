@@ -69,6 +69,19 @@ from 组合回测.统一多股执行器 import 运行共享账户回测
     "backtest_result": {},
 }
 沪深300列表路径 = os.path.join(项目根目录, "数据模块", "hs300_list.txt")
+中证500列表路径 = os.path.join(项目根目录, "数据模块", "zz500_list.txt")
+股票池配置 = {
+    "hs300": {
+        "name": "沪深300", "list_path": 沪深300列表路径,
+        "benchmark_path": os.path.join(项目根目录, "数据模块", "大盘数据", "hs300_日K线.pkl"),
+        "curve_key": "沪深300权益", "return_key": "沪深300收益率",
+    },
+    "zz500": {
+        "name": "中证500", "list_path": 中证500列表路径,
+        "benchmark_path": os.path.join(项目根目录, "数据模块", "大盘数据", "zz500_日K线.pkl"),
+        "curve_key": "中证500权益", "return_key": "中证500收益率",
+    },
+}
 
 
 def 读取回测进度():
@@ -192,10 +205,14 @@ def 启动后台回测(form, mode):
         ("stop_loss", "硬止损"), ("rsi_guard", "RSI站岗价止损"),
         ("rsi_threshold_hold", "RSI阈值守仓（暂缓ATR）"),
         ("atr_trailing", "ATR跟踪止盈止损"), ("atr_take_profit", "ATR跟踪止盈（仅盈利触发）"),
+        ("atr_protective_stop", "ATR亏损保护止损"), ("fixed_stop_loss", "固定比例硬止损"),
         ("momentum_exit", "动能衰竭退出"),
         ("time_exit", "时间退出"), ("divergence_fix", "背离修正卖出"),
     ],
     "过滤因子": [
+        ("rsi_resonance_filter", "RSI多信号共振"),
+        ("rsi_regime_adaptive_filter", "RSI市场状态自适应"),
+        ("fundamental_universe_filter", "基本面股票池准入"),
         ("index_trend_filter", "沪深300长期趋势过滤"),
         ("volume_spike_filter", "上一交易日成交额确认"),
         ("market_regime_filter", "沪深300市场状态过滤"),
@@ -217,7 +234,7 @@ def 启动后台回测(form, mode):
         ("divergence", "背离因子"), ("ma_direction", "MA方向因子"),
         ("entry_timing", "K线动量入场"), ("signal_scorer", "信号质量评分"),
         ("momentum_exit", "动能退出因子"), ("take_profit", "止盈因子"),
-        ("position_sizing", "动态仓位"), ("total_control", "总仓位控制"),
+        ("position_sizing", "半凯利仓位管理"), ("total_control", "总仓位控制"),
         ("grid_addon", "网格加仓（实验：固定/线性/倍数/生命周期预算）"),
         ("xgboost_trend", "XGBoost趋势"), ("randomforest_market", "RandomForest大盘"),
         ("committee_vote", "委员会投票"), ("ml_entry_timing", "ML入场时机"),
@@ -1151,7 +1168,16 @@ def 启动后台回测(form, mode):
             <input type="number" step="0.01" name="multi_time_exit_loss" value="{{ form.multi_time_exit_loss }}">
           </div>
           <div>
-            <label>多股股票列表（逗号分隔，留空默认用沪深300本地列表）</label>
+            <label>多股股票池</label>
+            <select name="multi_universe">
+              <option value="hs300" {% if form.multi_universe == 'hs300' %}selected{% endif %}>沪深300</option>
+              <option value="zz500" {% if form.multi_universe == 'zz500' %}selected{% endif %}>中证500</option>
+              <option value="custom" {% if form.multi_universe == 'custom' %}selected{% endif %}>自定义列表</option>
+            </select>
+            <p class="compact-note">指数成分为当前成分快照；自定义列表优先使用下方输入。</p>
+          </div>
+          <div>
+            <label>自定义股票列表（逗号分隔）</label>
             <textarea name="multi_stocks">{{ form.multi_stocks }}</textarea>
           </div>
           </div>
@@ -1407,7 +1433,7 @@ def 启动后台回测(form, mode):
         'single_full_position_mode', 'single_base_position', 'single_max_positions',
         'single_max_single_ratio', 'single_max_total_ratio', 'single_cash_floor',
         'single_liquidity_limit']),
-      multi: new Set(['multi_stocks', 'multi_capital', 'multi_start', 'multi_end',
+      multi: new Set(['multi_universe', 'multi_stocks', 'multi_capital', 'multi_start', 'multi_end',
         'multi_portfolio_mode', 'multi_workers', 'multi_base_position', 'multi_max_positions',
         'multi_max_single_ratio', 'multi_max_total_ratio', 'multi_cash_floor',
         'multi_liquidity_limit', 'multi_allow_partial_fill'])
@@ -1695,7 +1721,7 @@ def 启动后台回测(form, mode):
       const pct = value => value == null ? '--' : `${Number(value).toFixed(2)}%`;
       document.getElementById('liveMetrics').innerHTML = [
         metric('当前权益', live.当前权益 == null ? '--' : Number(live.当前权益).toLocaleString('zh-CN')),
-        metric('策略收益', pct(live.策略收益率)), metric('沪深300', pct(live.沪深300收益率)),
+        metric('策略收益', pct(live.策略收益率)), metric(live.基准名称 || '基准', pct(live.沪深300收益率 ?? live.中证500收益率)),
         metric('当前超额', pct(live.超额收益率)), metric('最大回撤', pct(live.最大回撤)),
         metric('胜率', pct(live.已平仓胜率)), metric('现金', live.现金 == null ? '--' : Number(live.现金).toLocaleString('zh-CN')),
         metric('使用率', pct(live.资金使用率)), metric('买入/卖出', `${live.实际买入 || 0} / ${live.实际卖出 || 0}`),
@@ -2043,6 +2069,7 @@ def 构建默认表单():
         "single_max_single_ratio": 1.0,
         "single_max_total_ratio": 1.0,
         "single_cash_floor": 0.0,
+        "multi_universe": "hs300",
         "multi_stocks": "",
         "multi_portfolio_mode": "shared_grid",
         "multi_start": "2020-01-01",
@@ -2122,13 +2149,15 @@ def 模块字段(form, prefix, category):
             "status": status, "disabled": status == "未就绪",
             "combination": filter_config.get("组合说明", ""),
             "params": params,
-            "param_note": (
+                "param_note": (
                 "打开后：用上一根收盘时的 RSI 状态预先反推本根哨兵价，本根最高价突破后成交。"
                 if category == "核心模块" and module_id == "same_bar_entry" else
                 "打开后：上一根收盘预计算哨兵价，本根只用最高价突破判断并成交。"
                 if category == "核心模块" and module_id == "next_bar_entry" else
                 "仅开关控制，无独立可调参数。"
                 if category == "核心模块" else
+                "信号资金系数可按比例缩小首次开仓和后续网格预算。"
+                if category == "买入规则" else
                 "当前模块暂无可调参数，保留为占位或由模型文件控制。"
             ),
         })
@@ -2226,7 +2255,7 @@ def 规范化表单(form_data):
     text_keys = [
         "ui_mode",
         "single_stock", "single_start", "single_end",
-        "multi_stocks", "multi_start", "multi_end",
+        "multi_universe", "multi_stocks", "multi_start", "multi_end",
         "single_rsi_price_source", "multi_rsi_price_source",
         "single_entry_timing", "multi_entry_timing",
         "multi_portfolio_mode",
@@ -2234,6 +2263,8 @@ def 规范化表单(form_data):
     ]
     for key in text_keys:
         normalized[key] = str(form_data.get(key, defaults[key])).strip() or defaults[key]
+    if normalized["multi_universe"] not in ("hs300", "zz500", "custom"):
+        normalized["multi_universe"] = defaults["multi_universe"]
     if normalized["ui_mode"] not in ("single", "multi"):
         normalized["ui_mode"] = "multi"
     for prefix in ("single", "multi"):
@@ -3020,17 +3051,43 @@ def 解析多股输入(form):
     # 页面提交使用 multi_stocks；提取模式配置后才会转换为 stocks。
     # 启动后台任务前也会调用本函数，因此这里兼容两种表单形态。
     stock_text = form.get("stocks", form.get("multi_stocks", ""))
-    if str(stock_text).strip():
+    if str(stock_text).strip() and form.get("universe", form.get("multi_universe", "custom")) == "custom":
         return 读取多股列表(stock_text)
-    return 读取多股列表(沪深300列表路径)
+    universe = form.get("universe", form.get("multi_universe", "hs300"))
+    return 读取多股列表(股票池配置.get(universe, 股票池配置["hs300"])["list_path"])
+
+
+def 获取股票池配置(form):
+    universe = str(form.get("universe", form.get("multi_universe", "hs300"))).strip()
+    return 股票池配置.get(universe, 股票池配置["hs300"])
 
 
 def 格式化小数百分比(value):
     return f"{float(value) * 100:+.2f}%"
 
 
-def 构建组合分析曲线(details, stocks, initial_capital, per_stock_capital, start_date=None, end_date=None):
-    """将独立资金池逐日汇总为组合权益、现金、持仓市值和HS300基准。"""
+def 提取组合基准指标(组合曲线, 初始资金, 策略收益率, 基准配置=None):
+    """从组合权益曲线提取所选指数收益与策略超额。"""
+    基准配置 = 基准配置 or 股票池配置["hs300"]
+    return_key = 基准配置["return_key"]
+    curve_key = 基准配置["curve_key"]
+    初始资金 = float(初始资金 or 0)
+    for point in reversed(组合曲线 or []):
+        try:
+            基准权益 = float(point.get(curve_key))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if 基准权益 > 0 and 初始资金 > 0:
+            基准收益率 = round((基准权益 / 初始资金 - 1.0) * 100, 10)
+            return {
+                return_key: 基准收益率,
+                "超额收益率": round(float(策略收益率) - 基准收益率, 10),
+            }
+    return {return_key: None, "超额收益率": None}
+
+
+def 构建组合分析曲线(details, stocks, initial_capital, per_stock_capital, start_date=None, end_date=None, 基准配置=None):
+    """将独立资金池逐日汇总为组合权益、现金、持仓市值和所选指数基准。"""
     import pandas as pd
 
     stock_daily = {}
@@ -3059,7 +3116,9 @@ def 构建组合分析曲线(details, stocks, initial_capital, per_stock_capital
         except (OSError, ValueError, KeyError, pd.errors.ParserError):
             continue
 
-    hs_path = os.path.join(项目根目录, "数据模块", "大盘数据", "hs300_日K线.pkl")
+    基准配置 = 基准配置 or 股票池配置["hs300"]
+    benchmark_key = 基准配置["curve_key"]
+    hs_path = 基准配置["benchmark_path"]
     hs_map = {}
     if os.path.exists(hs_path):
         try:
@@ -3092,7 +3151,7 @@ def 构建组合分析曲线(details, stocks, initial_capital, per_stock_capital
             "现金": round(cash, 2),
             "持仓市值": round(market_value, 2),
             "资金使用率": round(market_value / max(equity, 1.0), 6),
-            "沪深300权益": round(initial_capital * hs_last / hs_first, 2) if hs_first else None,
+            benchmark_key: round(initial_capital * hs_last / hs_first, 2) if hs_first else None,
         })
     return curve
 
@@ -3107,6 +3166,7 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
         selected = [label for module_id, label in items if form.get(f"switch_{category}_{module_id}")]
         config_lines.append(f"<div><b>多股·{category}</b>（{len(selected)}项）：{'、'.join(selected) if selected else '未选择'}</div>")
     config_lines.insert(0, f"<div><b>资金模式</b>：{summary.get('资金模式', '等额独立资金池')}</div>")
+    config_lines.insert(1, f"<div><b>股票池</b>：{summary.get('股票池', '沪深300')}（当前成分快照）</div>")
     config_lines.insert(1, f"<div><b>网格加仓模式</b>：{ {'fixed_tranche': '固定分层（实验）', 'linear': '线性递增（2/3/4/5倍）', 'multiplier': '倍数加仓（2/4/8/16倍）', 'lifecycle_budget': '生命周期预算（25/15/20/20/20）'}.get(summary.get('网格加仓模式', form.get('grid_mode', 'multiplier')), '未识别') }</div>")
     audit_by_stock = {}
     legacy_stock_summary = {}
@@ -3192,29 +3252,48 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
     first_stock_url = first_stock_url or fallback_stock_url
     page = f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>多股策略决策回放</title>
 <style>:root{{--bg:#090d15;--panel:#111827;--panel2:#172033;--line:#283449;--text:#e8edf6;--muted:#8490a5;--blue:#7184ff;--cyan:#39d6bd;--red:#ff617d;--gold:#f4bd50;--purple:#a774e8;--stock-width:360px}}*{{box-sizing:border-box}}html,body{{height:100%;margin:0;background:#090d15;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}}button,input{{font:inherit}}body{{display:flex;flex-direction:column;gap:8px;padding:8px;overflow:hidden}}.overview,.chart-card,.panel{{background:#111827;border:1px solid var(--line);border-radius:7px}}.overview{{padding:9px 11px;flex:none}}.overview-head{{display:flex;align-items:center;gap:10px;margin-bottom:7px}}h1{{font-size:17px;color:var(--red);margin:0;white-space:nowrap}}.fund-note{{font-size:10px;color:var(--gold);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}}.config-button{{border:1px solid var(--line);background:#202b40;color:var(--text);border-radius:5px;padding:5px 9px;cursor:pointer;white-space:nowrap}}.metric-grid{{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:6px}}.metric{{background:#172135;border:1px solid #26334a;border-radius:6px;padding:6px 8px}}.metric span{{display:block;color:var(--muted);font-size:9px;margin-bottom:2px}}.metric b{{font-size:14px;color:#fff}}.metric .good{{color:var(--cyan)}}.config-summary{{display:flex;gap:6px;margin-top:6px;overflow:hidden}}.config-summary div{{background:#151e30;border-radius:4px;padding:4px 7px;color:var(--muted);font-size:9px;white-space:nowrap}}.config-summary b{{color:#cbd5e1}}.analysis{{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,1fr);gap:8px;height:clamp(170px,27vh,320px);min-height:140px;resize:vertical;overflow:hidden;flex:none}}.chart-card{{position:relative;min-width:0;min-height:0;padding:32px 9px 7px}}.chart-title{{position:absolute;left:11px;top:8px;font-size:12px;font-weight:700}}.legend{{position:absolute;right:11px;top:8px;display:flex;gap:10px;font-size:10px;color:var(--muted)}}.legend i{{display:inline-block;width:14px;height:2px;margin-right:4px;vertical-align:middle}}canvas{{width:100%;height:100%;display:block}}.main{{display:grid;grid-template-columns:minmax(270px,var(--stock-width)) 6px minmax(0,1fr);min-height:280px;flex:1;overflow:hidden}}.splitter{{cursor:col-resize;background:#263248;border-radius:3px;margin:5px 1px}}.splitter:hover{{background:var(--blue)}}.stock-panel{{display:flex;flex-direction:column;overflow:hidden}}.stock-tools{{display:flex;gap:6px;padding:8px;border-bottom:1px solid var(--line)}}.stock-tools input{{min-width:0;flex:1;background:#0c1220;border:1px solid var(--line);color:#fff;border-radius:5px;padding:6px 8px;outline:none}}.stock-tools button{{border:1px solid var(--line);background:#1a2437;color:var(--muted);border-radius:5px;padding:5px 7px;cursor:pointer}}.table-wrap{{overflow:auto;min-height:0}}table{{width:100%;border-collapse:collapse;font-size:11px}}thead{{position:sticky;top:0;z-index:2;background:#172033}}th,td{{padding:7px;border-bottom:1px solid #222e42;text-align:right;white-space:nowrap}}th:first-child,td:first-child{{text-align:left}}tbody tr:hover{{background:#19243a}}a{{color:#93a4ff;text-decoration:none}}.positive{{color:var(--red)}}.negative{{color:var(--cyan)}}.muted-cell{{color:var(--muted)}}.viewer{{overflow:hidden}}iframe{{width:100%;height:100%;border:0;background:var(--bg)}}.config-pop{{position:fixed;inset:0;display:none;z-index:20;background:rgba(4,7,12,.7);align-items:flex-start;justify-content:flex-end;padding:58px 20px}}.config-pop.open{{display:flex}}.config-body{{width:min(620px,85vw);max-height:70vh;overflow:auto;background:#151e30;border:1px solid #35425a;border-radius:7px;padding:14px}}.config-body div{{padding:7px 0;border-bottom:1px solid var(--line);font-size:11px;line-height:1.5}}body.analysis-collapsed .analysis{{height:0;min-height:0;visibility:hidden}}@media(max-width:1050px){{.metric-grid{{grid-template-columns:repeat(3,1fr)}}.analysis{{grid-template-columns:1fr;height:240px;overflow:auto}}.main{{grid-template-columns:300px 5px minmax(650px,1fr);overflow:auto}}}}@media(max-height:760px){{.analysis{{height:180px}}.metric{{padding:4px 7px}}}}</style></head>
-<body><section class="overview"><div class="overview-head"><h1>多股策略决策回放台</h1><div class="fund-note">{summary.get('资金模式', '等额独立资金池')} · {('单股上限 '+format(float(form.get('base_position', 0)), ',.0f')+' 元，组合统一审批' if form.get('portfolio_mode') == 'shared_grid' else '每股约 '+format(float(form['capital'])/max(len(details),1), ',.0f')+' 元')} · 实际成交才显示箭头和连线</div><button class="config-button" id="analysisToggle">收起图表</button><button class="config-button" id="configToggle">策略配置</button></div><div class="metric-grid"><div class="metric"><span>组合初始资金</span><b>{float(summary.get('组合初始资金', form['capital'])):,.0f}</b></div><div class="metric"><span>组合最终权益</span><b>{float(summary.get('组合最终权益', form['capital'])):,.0f}</b></div><div class="metric"><span>组合收益</span><b class="good">{float(summary.get('组合总收益率', 0))*100:+.2f}%</b></div><div class="metric"><span>组合最大回撤</span><b>{float(summary.get('组合最大回撤', 0))*100:.2f}%</b></div><div class="metric"><span>最大使用资金</span><b>{float(summary.get('最大使用资金', 0)):,.0f}</b></div><div class="metric"><span>最小非零使用资金</span><b>{float(summary.get('最小使用资金', 0)):,.0f}</b></div></div><div class="config-summary">{''.join(config_lines)}</div></section>
-<section class="analysis"><div class="chart-card"><div class="chart-title">组合累计收益 vs 沪深300</div><div class="legend"><span><i style="background:#7184ff"></i>组合</span><span><i style="background:#a774e8"></i>沪深300</span><span><i style="background:#39d6bd"></i>超额</span></div><canvas id="returnChart"></canvas></div><div class="chart-card"><div class="chart-title">资金使用与可用现金</div><div class="legend"><span><i style="background:#f4bd50"></i>持仓市值</span><span><i style="background:#39d6bd"></i>现金</span><span><i style="background:#7184ff"></i>使用率</span></div><canvas id="capitalChart"></canvas></div></section>
+<body><section class="overview"><div class="overview-head"><h1>多股策略决策回放台</h1><div class="fund-note">回测时间：{form.get('start', '--')} 至 {form.get('end', '--')} · {summary.get('资金模式', '等额独立资金池')} · {('单股上限 '+format(float(form.get('base_position', 0)), ',.0f')+' 元，组合统一审批' if form.get('portfolio_mode') == 'shared_grid' else '每股约 '+format(float(form['capital'])/max(len(details),1), ',.0f')+' 元')} · 实际成交才显示箭头和连线</div><button class="config-button" id="returnChartToggle">组合收益</button><button class="config-button" id="capitalChartToggle">资金使用</button><button class="config-button" id="configToggle">策略配置</button></div><div class="metric-grid"><div class="metric"><span>组合初始资金</span><b>{float(summary.get('组合初始资金', form['capital'])):,.0f}</b></div><div class="metric"><span>组合最终权益</span><b>{float(summary.get('组合最终权益', form['capital'])):,.0f}</b></div><div class="metric"><span>组合收益</span><b class="good">{float(summary.get('组合总收益率', 0))*100:+.2f}%</b></div><div class="metric"><span>组合最大回撤</span><b>{float(summary.get('组合最大回撤', 0))*100:.2f}%</b></div><div class="metric"><span>最大使用资金</span><b>{float(summary.get('最大使用资金', 0)):,.0f}</b></div><div class="metric"><span>最小非零使用资金</span><b>{float(summary.get('最小使用资金', 0)):,.0f}</b></div></div><div class="config-summary">{''.join(config_lines)}</div></section>
 <main class="main"><section class="panel stock-panel"><div class="stock-tools"><input id="stockSearch" placeholder="搜索股票代码"><button data-sort="trades">成交优先</button><button data-sort="return">贡献排序</button></div><div class="table-wrap"><table id="stockTable"><thead><tr>{'<th>股票</th><th>组合贡献</th><th>实际买/卖</th><th>期末股数</th><th>组合拦截</th><th>策略收益</th>' if summary.get('资金模式') == '共享账户' else '<th>股票</th><th>收益</th><th>回撤</th><th>买/卖</th><th>期末权益</th>'}</tr></thead><tbody>{''.join(rows)}</tbody></table></div></section><div class="splitter" id="mainSplitter" title="拖动调整股票列表宽度"></div><section class="panel viewer"><iframe name="stock_view" src="{first_stock_url}" title="股票策略决策回放"></iframe></section></main>
 <div class="config-pop" id="configPop"><div class="config-body"><strong>本次多股策略配置</strong>{''.join(config_lines)}</div></div>
+<div class="chart-pop" id="returnChartPop"><div class="chart-dialog"><div class="chart-dialog-head"><span>组合累计收益 vs {summary.get('股票池', '沪深300')}</span><button class="config-button" data-close-chart>关闭</button></div><div class="chart-card"><div class="legend"><span><i style="background:#7184ff"></i>组合</span><span><i style="background:#a774e8"></i>{summary.get('股票池', '沪深300')}</span><span><i style="background:#39d6bd"></i>超额</span></div><canvas id="returnChart"></canvas></div></div></div>
+<div class="chart-pop" id="capitalChartPop"><div class="chart-dialog"><div class="chart-dialog-head"><span>资金使用与可用现金</span><button class="config-button" data-close-chart>关闭</button></div><div class="chart-card"><div class="legend"><span><i style="background:#f4bd50"></i>持仓市值</span><span><i style="background:#39d6bd"></i>现金</span><span><i style="background:#7184ff"></i>使用率</span></div><canvas id="capitalChart"></canvas></div></div></div>
 <script>const curve={json.dumps(equity_curve, ensure_ascii=False)};const initial={float(summary.get('组合初始资金', form['capital']))};const money=v=>new Intl.NumberFormat('zh-CN',{{maximumFractionDigits:0}}).format(v);function setupCanvas(id){{const canvas=document.getElementById(id),rect=canvas.getBoundingClientRect(),dpr=window.devicePixelRatio||1;canvas.width=Math.max(1,rect.width*dpr);canvas.height=Math.max(1,rect.height*dpr);const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);return{{canvas,ctx,w:rect.width,h:rect.height}}}}function line(ctx,values,x,y,color,width=2,dash=[]){{ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=width;ctx.setLineDash(dash);values.forEach((v,i)=>{{if(v==null)return;const px=x(i),py=y(v);i?ctx.lineTo(px,py):ctx.moveTo(px,py)}});ctx.stroke();ctx.setLineDash([])}}function grid(ctx,w,h,min,max,format){{ctx.font='10px sans-serif';ctx.fillStyle='#7f8ba0';ctx.strokeStyle='#263248';ctx.lineWidth=1;for(let i=0;i<5;i++){{const y=15+i*(h-32)/4,value=max-(max-min)*i/4;ctx.beginPath();ctx.moveTo(48,y);ctx.lineTo(w-8,y);ctx.stroke();ctx.fillText(format(value),4,y+3)}}}}function drawReturns(){{const{{ctx,w,h}}=setupCanvas('returnChart');if(!curve.length)return;const strategy=curve.map(p=>(p.权益/initial-1)*100),hs=curve.map(p=>p['沪深300权益']?(p['沪深300权益']/initial-1)*100:null),alpha=strategy.map((v,i)=>hs[i]==null?null:v-hs[i]);const vals=[...strategy,...hs,...alpha].filter(Number.isFinite),min=Math.min(...vals,0),max=Math.max(...vals,0),span=max-min||1,x=i=>48+i*(w-58)/Math.max(1,curve.length-1),y=v=>15+(max-v)/span*(h-32);grid(ctx,w,h,min,max,v=>v.toFixed(1)+'%');line(ctx,strategy,x,y,'#7184ff',2.4);line(ctx,hs,x,y,'#a774e8',1.8);line(ctx,alpha,x,y,'#39d6bd',1.4,[5,3]);ctx.fillStyle='#7184ff';ctx.fillText('组合 '+strategy.at(-1).toFixed(2)+'%',52,12);if(hs.at(-1)!=null){{ctx.fillStyle='#a774e8';ctx.fillText('沪深300 '+hs.at(-1).toFixed(2)+'%',145,12);ctx.fillStyle='#39d6bd';ctx.fillText('超额 '+alpha.at(-1).toFixed(2)+'%',260,12)}}}}function drawCapital(){{const{{ctx,w,h}}=setupCanvas('capitalChart');if(!curve.length)return;const cash=curve.map(p=>p.现金),used=curve.map(p=>p['持仓市值']),rate=curve.map(p=>p['资金使用率']*100),max=Math.max(initial,...cash,...used),x=i=>48+i*(w-58)/Math.max(1,curve.length-1),y=v=>15+(max-v)/max*(h-32),yr=v=>15+(100-v)/100*(h-32);grid(ctx,w,h,0,max,v=>money(v/10000)+'万');line(ctx,used,x,y,'#f4bd50',2);line(ctx,cash,x,y,'#39d6bd',1.8);line(ctx,rate,x,yr,'#7184ff',1.4,[4,3]);ctx.fillStyle='#7184ff';ctx.fillText('当前使用率 '+rate.at(-1).toFixed(1)+'%',w-125,12)}}function draw(){{drawReturns();drawCapital()}}window.addEventListener('resize',draw);new ResizeObserver(draw).observe(document.querySelector('.analysis'));draw();document.getElementById('analysisToggle').onclick=e=>{{document.body.classList.toggle('analysis-collapsed');e.target.textContent=document.body.classList.contains('analysis-collapsed')?'展开图表':'收起图表';setTimeout(draw,50)}};const pop=document.getElementById('configPop');document.getElementById('configToggle').onclick=()=>pop.classList.add('open');pop.onclick=e=>{{if(e.target===pop)pop.classList.remove('open')}};document.getElementById('stockSearch').oninput=e=>{{const q=e.target.value.trim();document.querySelectorAll('#stockTable tbody tr').forEach(row=>row.hidden=!row.dataset.stock?.includes(q))}};document.querySelectorAll('[data-sort]').forEach(button=>button.onclick=()=>{{const key=button.dataset.sort,tbody=document.querySelector('#stockTable tbody'),rows=[...tbody.rows];rows.sort((a,b)=>Number(b.dataset[key]||0)-Number(a.dataset[key]||0));rows.forEach(row=>tbody.appendChild(row))}});document.querySelectorAll('#stockTable a').forEach(link=>link.onclick=()=>{{document.querySelectorAll('#stockTable tr').forEach(row=>row.style.background='');link.closest('tr').style.background='#202d47'}});const splitter=document.getElementById('mainSplitter');let resizing=false;splitter.onpointerdown=e=>{{resizing=true;splitter.setPointerCapture(e.pointerId)}};splitter.onpointermove=e=>{{if(!resizing)return;const left=document.querySelector('.main').getBoundingClientRect().left,width=Math.max(270,Math.min(620,e.clientX-left));document.documentElement.style.setProperty('--stock-width',width+'px')}};splitter.onpointerup=()=>resizing=false;</script></body></html>'''
-    # 组合图表采用纵向独立大图；只调整回放页面展示，不改变曲线数据。
-    page = page.replace('<button class="config-button" id="analysisToggle">收起图表</button>', '')
-    page = page.replace('body.analysis-collapsed .analysis{height:0;min-height:0;visibility:hidden}', '')
+    # 图表按需弹出，不再占据多股回放的默认高度；曲线数据与计算保持不变。
     page = page.replace(
-        '</style></head>',
-        '<style>html,body{min-height:100%;height:auto}body{overflow:auto;gap:12px;padding:10px}.analysis{grid-template-columns:1fr;grid-template-rows:repeat(2,minmax(440px,1fr));height:auto;min-height:892px;resize:none;overflow:visible;gap:12px}.chart-card{height:440px;min-height:440px}.main{height:700px;min-height:700px;flex:none}</style></head>',
+        'id="returnChartToggle">组合收益',
+        'id="returnChartToggle" onclick="document.querySelectorAll(\'.chart-pop\').forEach(p=>p.classList.remove(\'open\'));document.getElementById(\'returnChartPop\').classList.add(\'open\');requestAnimationFrame(draw)">组合收益',
         1,
     )
     page = page.replace(
-        "document.getElementById('analysisToggle').onclick=e=>{document.body.classList.toggle('analysis-collapsed');e.target.textContent=document.body.classList.contains('analysis-collapsed')?'展开图表':'收起图表';setTimeout(draw,50)};",
-        '',
+        'id="capitalChartToggle">资金使用',
+        'id="capitalChartToggle" onclick="document.querySelectorAll(\'.chart-pop\').forEach(p=>p.classList.remove(\'open\'));document.getElementById(\'capitalChartPop\').classList.add(\'open\');requestAnimationFrame(draw)">资金使用',
+        1,
     )
+    page = page.replace(
+        'data-close-chart>关闭',
+        'data-close-chart onclick="this.closest(\'.chart-pop\').classList.remove(\'open\')">关闭',
+    )
+    page = page.replace(
+        '</style></head>',
+        '<style>.chart-pop{position:fixed !important;top:0 !important;right:0 !important;bottom:0 !important;left:0 !important;z-index:30;display:none !important;align-items:center;justify-content:center;padding:5vh 5vw;margin:0 !important;background:rgba(4,7,12,.76)}.chart-pop.open{display:flex !important}.chart-dialog{width:min(1280px,90vw);height:min(760px,88vh);max-height:88vh;display:flex;flex-direction:column;background:#111827;border:1px solid #35425a;border-radius:8px;overflow:hidden}.chart-dialog-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;font-size:13px;font-weight:700;border-bottom:1px solid var(--line)}.chart-dialog .chart-card{flex:1;margin:10px;min-height:0}</style></head>',
+        1,
+    )
+    page = page.replace(
+        "window.addEventListener('resize',draw);new ResizeObserver(draw).observe(document.querySelector('.analysis'));draw();document.getElementById('analysisToggle').onclick=e=>{document.body.classList.toggle('analysis-collapsed');e.target.textContent=document.body.classList.contains('analysis-collapsed')?'展开图表':'收起图表';setTimeout(draw,50)};const pop=",
+        "window.addEventListener('resize',draw);draw();function openChart(id){const chart=document.getElementById(id);chart.classList.add('open');requestAnimationFrame(draw)};document.getElementById('returnChartToggle').onclick=()=>openChart('returnChartPop');document.getElementById('capitalChartToggle').onclick=()=>openChart('capitalChartPop');document.querySelectorAll('[data-close-chart]').forEach(button=>button.onclick=()=>button.closest('.chart-pop').classList.remove('open'));document.querySelectorAll('.chart-pop').forEach(chart=>chart.onclick=event=>{if(event.target===chart)chart.classList.remove('open')});const pop=",
+    )
+    benchmark_key = 股票池配置.get(form.get("universe", "hs300"), 股票池配置["hs300"])["curve_key"]
+    page = page.replace("const money=", f"const benchmarkKey={json.dumps(benchmark_key, ensure_ascii=False)};const money=", 1)
+    page = page.replace("p['沪深300权益']", "p[benchmarkKey]")
+    page = page.replace("'沪深300 '+hs", f"'{summary.get('股票池', '沪深300')} '+hs")
     with open(path, "w", encoding="utf-8") as target:
         target.write(page)
 
 
 def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_callback=None):
     form = 提取模式配置(form, "multi")
+    form["universe"] = form.get("multi_universe", "hs300")
+    benchmark_config = 获取股票池配置(form)
     stocks = 解析多股输入(form)
     if progress:
         progress(phase="准备多股回测", completed=0, total=len(stocks), unit="股票", trades=0, message=f"共 {len(stocks)} 只股票")
@@ -3244,6 +3323,7 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
             progress_callback=progress,
             stop_requested=stop_requested,
             checkpoint_callback=checkpoint_callback,
+            benchmark_config=benchmark_config,
         )
         if progress and not shared_run.get("stopped"):
             progress(
@@ -3367,7 +3447,7 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
     else:
         portfolio = {}
         组合曲线 = 构建组合分析曲线(
-            details, stocks, 组合初始资金, 每股资金, form["start"], form["end"]
+            details, stocks, 组合初始资金, 每股资金, form["start"], form["end"], benchmark_config
         )
     峰值 = 组合初始资金
     组合回撤 = 0.0
@@ -3379,6 +3459,7 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
     非零使用资金 = [value for value in 使用资金列表 if value > 0]
     summary.update({
         "资金模式": "共享账户" if form.get("portfolio_mode") == "shared_grid" else "等额独立资金池",
+        "股票池": benchmark_config["name"],
         "网格加仓模式": form.get("grid_mode", "multiplier"),
         "组合初始资金": 组合初始资金,
         "组合最终权益": 组合最终权益,
@@ -3417,17 +3498,26 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
             "汇总": summary,
             "股票明细": details,
             "组合权益曲线": 组合曲线,
+            "股票池": benchmark_config["name"],
         }, ensure_ascii=False, indent=2))
     multi_token = uuid.uuid4().hex
     multi_report_path = os.path.join(run_dir, "多股策略决策回放.html")
     生成多股策略回放页面(multi_report_path, multi_token, run_dir, details, summary, form, 组合曲线)
     最近多股报告.update({"token": multi_token, "path": multi_report_path, "run_dir": run_dir})
+    基准指标 = 提取组合基准指标(
+        组合曲线,
+        summary.get("组合初始资金", form["capital"]),
+        float(summary.get("组合总收益率", 0)) * 100,
+        benchmark_config,
+    )
     return {
         "status": f"多股回测完成：{len(valid)}/{len(stocks)} 只股票有结果",
         "error": False,
         "live": {
             "当前权益": float(summary.get("组合最终权益", form["capital"])),
             "策略收益率": float(summary.get("组合总收益率", 0)) * 100,
+            "基准名称": benchmark_config["name"],
+            **基准指标,
             "最大回撤": float(summary.get("组合最大回撤", 0)) * 100,
             "已平仓胜率": float(summary.get("加权胜率", 0)) * 100,
             "现金": float(summary.get("当前现金", 0)),
@@ -3531,7 +3621,7 @@ def 恢复最近多股报告():
             html = source.read()
     except OSError:
         return None
-    match = re.search(r"/multi/([0-9a-f]+)/stock/", html)
+    match = re.search(r"/multi/([^/]+)/stock/", html)
     token = match.group(1) if match else uuid.uuid4().hex
     最近多股报告.update({"token": token, "path": report_path, "run_dir": run_dir})
     return report_path
@@ -3646,6 +3736,10 @@ def 首页():
             with open(result_path, encoding="utf-8") as source:
                 payload = json.load(source)
             summary = payload.get("汇总", {})
+            benchmark_config = 股票池配置.get(
+                "zz500" if payload.get("股票池") == "中证500" else "hs300",
+                股票池配置["hs300"],
+            )
             result["status"] = "多股回测完成"
             result["report_url"] = f"/multi-report/{最近多股报告['token']}"
             result["run_dir"] = 最近多股报告["run_dir"]
@@ -3655,6 +3749,23 @@ def 首页():
                 "max_drawdown": f"{float(summary.get('组合最大回撤', 0)) * 100:.2f}%",
                 "win_rate": f"{float(summary.get('加权胜率', 0)) * 100:.2f}%",
                 "final_equity": f"{float(summary.get('组合最终权益', payload.get('初始资金', 0))):,.0f}",
+            }
+            result["live"] = {
+                "当前权益": float(summary.get("组合最终权益", payload.get("初始资金", 0))),
+                "策略收益率": float(summary.get("组合总收益率", 0)) * 100,
+                "基准名称": benchmark_config["name"],
+                **提取组合基准指标(
+                    payload.get("组合权益曲线", []),
+                    summary.get("组合初始资金", payload.get("初始资金", 0)),
+                    float(summary.get("组合总收益率", 0)) * 100,
+                    benchmark_config,
+                ),
+                "最大回撤": float(summary.get("组合最大回撤", 0)) * 100,
+                "已平仓胜率": float(summary.get("加权胜率", 0)) * 100,
+                "现金": float(summary.get("当前现金", 0)),
+                "实际买入": int(summary.get("买入总数", 0)),
+                "实际卖出": int(summary.get("卖出总数", 0)),
+                "实际成交": int(summary.get("总交易数", 0)),
             }
             result["backtest_result"] = {
                 "mode": "多股回测（已完成）",
@@ -3708,6 +3819,16 @@ def 首页():
         if last_run_mode in ("single", "multi") and isinstance(last_run_form, dict)
         else []
     )
+    页面进度 = 读取回测进度()
+    if 页面进度.get("status") == "idle" and result.get("live"):
+        页面进度 = {
+            "status": "completed", "mode": "multi" if result.get("active_view") == "multi" else "single",
+            "task_label": result.get("backtest_result", {}).get("mode", "回测"),
+            "phase": "已完成", "message": result.get("status", "回测完成"),
+            "completed": 1, "total": 1, "unit": "任务", "live": result["live"],
+            "metrics": result.get("metrics", {}), "backtest_result": result.get("backtest_result", {}),
+            "result_url": result.get("report_url"),
+        }
     return render_template_string(
         页面模板,
         form=form,
@@ -3735,7 +3856,7 @@ def 首页():
         last_run_summary=last_run_summary,
         last_run_saved_at=last_run_saved_at,
         last_run_mode="单股" if last_run_mode == "single" else "多股" if last_run_mode == "multi" else "",
-        progress=读取回测进度(),
+        progress=页面进度,
     )
 
 
@@ -3795,18 +3916,50 @@ def 查看报告(token):
 def 查看多股报告(token):
     if token != 最近多股报告["token"] or not 最近多股报告["path"] or not os.path.exists(最近多股报告["path"]):
         return Response("多股报告不存在或已失效。", status=404, content_type="text/plain; charset=utf-8")
-    return send_file(最近多股报告["path"], mimetype="text/html")
+    with open(最近多股报告["path"], encoding="utf-8") as source:
+        html = source.read()
+    html = html.replace(
+        ".chart-pop{position:fixed;inset:0;z-index:30;",
+        ".chart-pop{position:fixed !important;top:0 !important;right:0 !important;bottom:0 !important;left:0 !important;z-index:30;",
+        1,
+    )
+    html = html.replace(
+        'id="returnChartToggle">组合收益',
+        'id="returnChartToggle" onclick="document.querySelectorAll(\'.chart-pop\').forEach(p=>p.classList.remove(\'open\'));document.getElementById(\'returnChartPop\').classList.add(\'open\');requestAnimationFrame(draw)">组合收益',
+        1,
+    )
+    html = html.replace(
+        'id="capitalChartToggle">资金使用',
+        'id="capitalChartToggle" onclick="document.querySelectorAll(\'.chart-pop\').forEach(p=>p.classList.remove(\'open\'));document.getElementById(\'capitalChartPop\').classList.add(\'open\');requestAnimationFrame(draw)">资金使用',
+        1,
+    )
+    html = html.replace(
+        'data-close-chart>关闭',
+        'data-close-chart onclick="this.closest(\'.chart-pop\').classList.remove(\'open\')">关闭',
+    )
+    return Response(html, mimetype="text/html")
+
+
+旧版RSI归因脚本片段 = """group.buys.reduce((sum,buy)=>sum+(Number(buy['总成本'])||((Number(buy['买入价'])||0)*(Number(buy['成交数量'])||0)),0);"""
+修复后RSI归因脚本片段 = """group.buys.reduce((sum,buy)=>sum+(Number(buy['总成本'])||((Number(buy['买入价'])||0)*(Number(buy['成交数量'])||0))),0);"""
+
+
+def 修复旧版回放脚本(html):
+    """兼容已生成的旧回放页面，避免历史 RSI 归因脚本阻断全部页面交互。"""
+    return html.replace(旧版RSI归因脚本片段, 修复后RSI归因脚本片段)
 
 
 @应用.route("/multi/<token>/stock/<stock>")
 def 查看多股单票回放(token, stock):
-    if token != 最近多股报告["token"] or not 最近多股报告["run_dir"]:
+    if token not in {最近多股报告["token"], "current"} or not 最近多股报告["run_dir"]:
         return Response("多股回放不存在或已失效。", status=404, content_type="text/plain; charset=utf-8")
     safe_stock = "".join(ch for ch in str(stock) if ch.isalnum() or ch in "_-" )
     path = os.path.join(最近多股报告["run_dir"], "股票", safe_stock, "策略决策回放.html")
     if not os.path.isfile(path):
         return Response("该股票没有可用回放。", status=404, content_type="text/plain; charset=utf-8")
-    return send_file(path, mimetype="text/html")
+    with open(path, encoding="utf-8") as source:
+        html = 修复旧版回放脚本(source.read())
+    return Response(html, mimetype="text/html")
 
 
 @应用.route("/output/<path:filename>")

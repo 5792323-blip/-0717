@@ -10,12 +10,30 @@ from 运行程序.interactive_backtest_app import (
     应用表单到配置, 应用, 构建默认表单, 构建工作台表单,
     保存最近工作台配置, 获取当前单票回放地址, 获取多股票回放地址,
     运行交互回测, 提取模式配置, 规范化表单, 预检查无成交风险,
-    _保存回测检查点, 回测检查点,
+    _保存回测检查点, 回测检查点, 提取组合基准指标, 修复旧版回放脚本,
 )
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(ROOT, "1_策略配置")
+
+
+def test_extracts_hs300_and_excess_return_from_portfolio_curve():
+    metrics = 提取组合基准指标(
+        [{"沪深300权益": 1000000}, {"沪深300权益": 1220000}],
+        1000000,
+        35.0,
+    )
+
+    assert metrics == {"沪深300收益率": 22.0, "超额收益率": 13.0}
+
+
+def test_repairs_legacy_rsi_attribution_script_without_changing_other_html():
+    legacy = "<script>group.buys.reduce((sum,buy)=>sum+(Number(buy['总成本'])||((Number(buy['买入价'])||0)*(Number(buy['成交数量'])||0)),0);</script>"
+
+    repaired = 修复旧版回放脚本(legacy)
+
+    assert repaired == "<script>group.buys.reduce((sum,buy)=>sum+(Number(buy['总成本'])||((Number(buy['买入价'])||0)*(Number(buy['成交数量'])||0))),0);</script>"
 
 
 def test_apply_form_updates_snapshot(tmp_path):
@@ -265,7 +283,7 @@ def test_home_page_renders():
     assert 'name="single_switch_扩展因子_xgboost_trend"' in body
     assert 'name="single_switch_扩展因子_xgboost_trend"' in body and "disabled" in body
     assert re.search(r"① 入场信号</span><span class=\"fold-count\">4 项（\d+项）</span>", body)
-    assert re.search(r"② 入场确认与过滤</span><span class=\"fold-count\">19 项（\d+项）</span>", body)
+    assert re.search(r"② 入场确认与过滤</span><span class=\"fold-count\">22 项（\d+项）</span>", body)
     assert "③ 仓位与网格" in body
     assert "④ 成交执行" in body
     assert "⑤ 卖出与持仓管理" in body

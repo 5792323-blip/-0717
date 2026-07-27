@@ -19,7 +19,10 @@ def test_shared_account_report_populates_actual_trade_table(tmp_path):
         },
     }
     details = [{"股票代码": "688183", "总收益率": 0.01, "最大回撤": 0.02}]
-    form = {"portfolio_mode": "shared_grid", "capital": 1_000_000, "base_position": 300_000}
+    form = {
+        "portfolio_mode": "shared_grid", "capital": 1_000_000,
+        "base_position": 300_000, "start": "2020-01-01", "end": "2026-03-31",
+    }
     output = tmp_path / "multi.html"
 
     生成多股策略回放页面(output, "token", str(tmp_path), details, summary, form, [])
@@ -29,3 +32,12 @@ def test_shared_account_report_populates_actual_trade_table(tmp_path):
     assert "实际买/卖" in page
     assert "mainSplitter" in page
     assert "analysisToggle" not in page
+    assert 'id="returnChartToggle">组合收益' in page
+    assert 'id="capitalChartToggle">资金使用' in page
+    assert 'id="returnChartPop"' in page
+    assert 'id="capitalChartPop"' in page
+    assert '<section class="analysis">' not in page
+    assert "回测时间：2020-01-01 至 2026-03-31" in page
+    assert "returnChartToggle').onclick" in page
+    assert "capitalChartToggle').onclick" in page
+    assert "document.querySelector('.analysis')" not in page

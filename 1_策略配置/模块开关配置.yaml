@@ -46,6 +46,26 @@
       状态: 完成
       模块: 5_买入规则.rsi_cross_70
   过滤因子:
+    stock_trend_universe_filter:
+      名称: 个股大周期趋势准入
+      启用: false
+      状态: 实验
+      模块: 8_过滤因子.stock_trend_universe_filter
+    rsi_resonance_filter:
+      名称: RSI多信号共振
+      启用: false
+      状态: 实验
+      模块: 8_过滤因子.rsi_resonance_filter
+    rsi_regime_adaptive_filter:
+      名称: RSI市场状态自适应
+      启用: false
+      状态: 实验
+      模块: 8_过滤因子.rsi_regime_adaptive_filter
+    fundamental_universe_filter:
+      名称: 基本面股票池准入
+      启用: false
+      状态: 实验
+      模块: 8_过滤因子.fundamental_universe_filter
     index_trend_filter:
       名称: 沪深300长期趋势
       启用: false
@@ -202,6 +222,16 @@
       启用: false
       状态: 完成
       模块: 6_卖出规则.atr_take_profit
+    atr_protective_stop:
+      名称: ATR亏损保护止损
+      启用: false
+      状态: 实验
+      模块: 6_卖出规则.atr_protective_stop
+    fixed_stop_loss:
+      名称: 固定比例硬止损
+      启用: false
+      状态: 实验
+      模块: 6_卖出规则.fixed_stop_loss
     divergence_fix:
       名称: 背离修正卖出
       启用: false

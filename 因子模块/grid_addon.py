@@ -21,6 +21,9 @@ class 网格加仓(因子基类):
         self.最大加仓次数 = int(self.参数.get("最大加仓次数", 5))
         self.首次回撤阈值 = float(self.参数.get("首次回撤阈值", 0.05))
         self.允许同根多次加仓 = bool(self.参数.get("允许同根多次加仓", False))
+        self.启用风控限制 = bool(self.参数.get("启用风控限制", False))
+        self.最小加仓间隔K线 = max(0, int(self.参数.get("最小加仓间隔K线", 5)))
+        self.禁止加仓持仓K线数 = max(0, int(self.参数.get("禁止加仓持仓K线数", 30)))
         self.加仓模式 = str(self.参数.get("加仓模式", "multiplier"))
         self.倍数 = max(1.0, float(self.参数.get("倍数", 2.0)))
         比例 = self.参数.get("生命周期预算比例", [0.25, 0.15, 0.20, 0.20, 0.20])
@@ -46,6 +49,36 @@ class 网格加仓(因子基类):
         最大加仓次数 = 4 if self.加仓模式 == "lifecycle_budget" else self.最大加仓次数
         if 已触发次数 >= 最大加仓次数:
             return {"触发加仓": False, "说明": f"已达最大加仓次数{最大加仓次数}"}
+
+        if self.启用风控限制:
+            当前索引 = 全局状态.get("当前索引")
+            买入时间 = 持仓.get("买入时间")
+            最近加仓索引 = 持仓.get("网格_最近加仓索引")
+            try:
+                当前索引 = int(当前索引)
+            except (TypeError, ValueError):
+                当前索引 = None
+            try:
+                买入时间 = int(买入时间)
+            except (TypeError, ValueError):
+                买入时间 = None
+            try:
+                最近加仓索引 = int(最近加仓索引)
+            except (TypeError, ValueError):
+                最近加仓索引 = 买入时间
+
+            if (当前索引 is not None and 最近加仓索引 is not None
+                    and 当前索引 - 最近加仓索引 < self.最小加仓间隔K线):
+                return {
+                    "触发加仓": False,
+                    "说明": f"网格风控：距上次成交不足{self.最小加仓间隔K线}根K线",
+                }
+            if (当前索引 is not None and 买入时间 is not None
+                    and 当前索引 - 买入时间 >= self.禁止加仓持仓K线数):
+                return {
+                    "触发加仓": False,
+                    "说明": f"网格风控：持仓已达{self.禁止加仓持仓K线数}根K线，冻结加仓",
+                }
 
         首笔股数 = int(持仓.get("网格_首笔股数", 0) or 0)
         if 首笔股数 <= 0 and self.加仓模式 != "lifecycle_budget":
