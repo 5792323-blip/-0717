@@ -9,7 +9,7 @@ import yaml
 from 运行程序.interactive_backtest_app import (
     应用表单到配置, 应用, 构建默认表单, 构建工作台表单,
     保存最近工作台配置, 获取当前单票回放地址, 获取多股票回放地址,
-    运行交互回测, 提取模式配置, 规范化表单, 预检查无成交风险,
+    运行交互回测, 启动后台回测, 回测进度, 提取模式配置, 规范化表单, 预检查无成交风险,
     _保存回测检查点, 回测检查点, 提取组合基准指标, 修复旧版回放脚本,
 )
 
@@ -246,13 +246,17 @@ def test_home_page_renders():
     assert "运行单股回测" in body
     assert "运行多股回测" in body
     assert "公共策略配置" in body
-    assert "公共指标、成交与网格参数" in body
+    assert "策略与账户设置" in body
     assert "严格预挂单下，1.001 代表成交价上限上浮 0.1%" in body
     assert "updateEffectiveConfig" in body
     assert 'id="backtestProgress"' in body
     assert "pollProgress" in body
     assert "有效订单金额预览" in body
-    assert "策略单笔请求金额" in body
+    assert "首次开仓时机" in body
+    assert "网格加仓时机" in body
+    assert "资金基准金额" in body
+    assert "各信号资金计划" in body
+    assert "倍数加仓：1/2/4/8/16" in body
     assert "单只股票累计仓位上限比例" in body
     assert "组合总持仓上限比例" in body
     assert "RSI价格源" in body
@@ -290,6 +294,8 @@ def test_home_page_renders():
     assert "⑥ 实验与研究" in body
     assert 'id="selectedStrategy"' in body
     assert "updateSelectedStrategy" in body
+    assert "最大持仓股数" in body
+    assert "拒绝订单汇总" in body
 
 
 def test_backtest_progress_endpoint_returns_idle_state():
@@ -419,6 +425,19 @@ def test_single_backtest_publishes_run_directory_before_execution(tmp_path):
         运行交互回测(form, progress=lambda **changes: progress.append(changes))
 
     assert any(item.get("run_dir") == str(tmp_path) for item in progress)
+
+
+def test_new_backtest_cleans_previous_interactive_outputs():
+    form = 构建默认表单()
+    回测进度.clear()
+    with patch("运行程序.interactive_backtest_app.清理旧交互回测数据") as cleanup, \
+         patch("运行程序.interactive_backtest_app.threading.Thread") as thread:
+        task_id = 启动后台回测(form, "multi")
+
+    cleanup.assert_called_once_with()
+    thread.return_value.start.assert_called_once_with()
+    assert task_id
+    回测进度.clear()
 
 
 def test_precheck_blocks_zero_trade_risk():

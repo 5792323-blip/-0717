@@ -212,9 +212,17 @@ class 规则执行器:
         )
         self.涨跌停比例 = float(买入参数.get('涨跌停比例', 0.10))
         self.涨停不买 = bool(买入参数.get('涨停不买', True))
-        self.买入时机模式 = 规范化模式(
-            买入参数.get('买入时机模式', STRICT_PRECOMPUTED)
+        self.首次开仓时机模式 = 规范化模式(
+            买入参数.get(
+                '首次开仓时机模式',
+                买入参数.get('买入时机模式', STRICT_PRECOMPUTED),
+            )
         )
+        self.网格加仓时机模式 = 规范化模式(
+            买入参数.get('网格加仓时机模式', STRICT_PRECOMPUTED)
+        )
+        # 旧代码路径继续读取这个字段；它现在明确代表首次开仓时机。
+        self.买入时机模式 = self.首次开仓时机模式
         self.待次根开盘买入 = None
         # 同一根K线只允许一次普通买入；跨K线可继续增持同一股票。
         self._本根已买入股票 = set()
@@ -656,6 +664,7 @@ class 规则执行器:
         self.本根反推价 = None
         self.本根反推信号类型 = None
         self.本根反推目标RSI = None
+        self._本根哨兵价来源 = None
         self._本根已买入股票 = set()
 
         # 严格模式的买入判断只能读取上一根累积的过滤状态。
@@ -666,7 +675,8 @@ class 规则执行器:
 
         # 本根预挂模式在开盘前用上一根已完成状态建立订单；本根收盘
         # 后的新 RSI 只能用于下一根，不能回填当前最高价。
-        if self.买入时机模式 in (SAME_BAR_ENTRY, STRICT_PRECOMPUTED):
+        if (self.买入时机模式 in (SAME_BAR_ENTRY, STRICT_PRECOMPUTED)
+                or self.网格加仓时机模式 == STRICT_PRECOMPUTED):
             self._预计算本根哨兵价()
 
         # 严格预挂模式要到本根买卖决策结束后才更新扩展因子。
@@ -749,7 +759,14 @@ class 规则执行器:
             self._检查卖出(持仓, K线数据, 当前索引, 股票_code=股票代码)
 
         # 卖出检查之后再检查“加仓”（避免同根同时触发卖出与加仓）
-        if self.因子管理器 and self.因子管理器.已启用因子:
+        if (self.因子管理器 and self.因子管理器.已启用因子
+                and self.网格加仓时机模式 != SAME_BAR_ENTRY):
+            加仓快照 = list(self.当前持仓.items())
+            for 股票代码, 持仓 in 加仓快照:
+                self._检查加仓(持仓, K线数据, 当前索引, 股票_code=股票代码)
+        elif self.因子管理器 and self.因子管理器.已启用因子:
+            # 本根模式要等本根收盘形成新哨兵价后再检查网格，避免把
+            # 开盘前预计算的上一根哨兵价误当成本根新形成的信号。
             加仓快照 = list(self.当前持仓.items())
             for 股票代码, 持仓 in 加仓快照:
                 self._检查加仓(持仓, K线数据, 当前索引, 股票_code=股票代码)
@@ -905,6 +922,7 @@ class 规则执行器:
             self.本根反推价 = float(反推价)
             self.本根反推信号类型 = 信号类型
             self.本根反推目标RSI = 结果.get('目标RSI')
+            self._本根哨兵价来源 = "precomputed"
         except (TypeError, ValueError, KeyError):
             return
 
@@ -1726,6 +1744,7 @@ class 规则执行器:
                         self.哨兵价形成索引 = 当前索引
                         self.哨兵价本根新形成 = True
                         self.哨兵量价快照 = self._生成哨兵量价快照()
+                        self._本根哨兵价来源 = "formed"
             except Exception:
                 pass
         

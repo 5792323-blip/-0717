@@ -100,4 +100,5 @@ def test_two_stock_engines_share_one_position_limit_and_real_cash(tmp_path, monk
     assert len(account.持仓) <= 1
     assert account.现金 >= 0
     assert any(row.get("原因") == "达到最大持仓数量" for row in account.审批记录)
+    assert run["live"]["拒绝原因汇总"]["达到最大持仓数量"] > 0
     assert {result["股票代码"] for result in run["股票结果"]} == {"600519", "600520"}

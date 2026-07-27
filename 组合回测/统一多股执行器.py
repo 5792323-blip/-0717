@@ -6,6 +6,7 @@
 """
 
 import os
+from collections import Counter
 from time import perf_counter
 
 import pandas as pd
@@ -93,6 +94,35 @@ def _整理股票结果(session, initial_capital, config_snapshot, elapsed):
     return result
 
 
+def _可序列化审批值(value):
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except (ValueError, TypeError):
+            pass
+    if isinstance(value, dict):
+        return {str(key): _可序列化审批值(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_可序列化审批值(item) for item in value]
+    return value
+
+
+def _提取拒绝订单明细(审批记录):
+    details = []
+    for row in 审批记录:
+        try:
+            shares = int(float(row.get("成交股数", 0) or 0))
+        except (TypeError, ValueError):
+            shares = 0
+        if str(row.get("结果", "")) == "实际成交" and shares > 0:
+            continue
+        details.append({
+            str(key): _可序列化审批值(value)
+            for key, value in row.items()
+        })
+    return details
+
+
 def 运行共享账户回测(
     stocks, start, end, capital, config_dir, liquidity_limit=0.01,
     allow_partial_fill=True, progress_callback=None, stop_requested=None,
@@ -148,6 +178,7 @@ def 运行共享账户回测(
     curve = []
     timestamps = sorted(timeline)
     actual_buys = actual_sells = rejected_orders = partial_fills = 0
+    rejection_reasons = Counter()
     realized_wins = realized_losses = 0
     total_fees = 0.0
     approval_cursor = 0
@@ -234,6 +265,7 @@ def 运行共享账户回测(
                         pass
             else:
                 rejected_orders += 1
+                rejection_reasons[str(row.get("原因") or result or "未说明原因")] += 1
             if str(row.get("审批状态", "")) == "部分成交":
                 partial_fills += 1
             try:
@@ -263,6 +295,7 @@ def 运行共享账户回测(
             "实际成交": actual_buys + actual_sells,
             "审批请求": len(account.审批记录),
             "拒绝订单": rejected_orders,
+            "拒绝原因汇总": dict(rejection_reasons),
             "部分成交": partial_fills,
             "已实现盈利": realized_wins,
             "已实现亏损": realized_losses,
@@ -280,6 +313,7 @@ def 运行共享账户回测(
                 phase="共享账户时间轴回测", completed=时间轴索引, total=len(timestamps),
                 unit="时间点", trades=actual_buys + actual_sells, message=f"处理到 {point['日期']}",
                 approvals=len(account.审批记录), live={**live, "已处理时间点": 时间轴索引, "时间点总数": len(timestamps)},
+                拒绝订单明细=_提取拒绝订单明细(account.审批记录),
                 curve_point={**curve[-1], **live},
             )
         if checkpoint_callback and (时间轴索引 == 1 or 时间轴索引 == len(timestamps) or 时间轴索引 % max(1, len(timestamps) // 100) == 0):
@@ -307,6 +341,7 @@ def 运行共享账户回测(
         "实际成交": actual_buys + actual_sells,
         "审批请求": len(account.审批记录),
         "拒绝订单": rejected_orders,
+        "拒绝原因汇总": dict(rejection_reasons),
         "部分成交": partial_fills,
         "已平仓胜率": realized_wins / max(realized_wins + realized_losses, 1) * 100,
         "累计费用": round(total_fees, 2),

@@ -47,6 +47,7 @@ from 组合回测.统一多股执行器 import 运行共享账户回测
 回测停止事件 = threading.Event()
 回测检查点锁 = threading.Lock()
 回测检查点 = {}
+回测拒绝订单明细 = {}
 回测进度 = {
     "task_id": None,
     "status": "idle",
@@ -94,6 +95,9 @@ def _回测进度回调(task_id, **changes):
         if 回测进度.get("task_id") == task_id:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             live = changes.pop("live", None)
+            rejection_details = changes.pop("拒绝订单明细", None)
+            if rejection_details is not None:
+                回测拒绝订单明细[task_id] = copy.deepcopy(rejection_details)
             if live is not None:
                 回测进度["live"] = live
             回测进度.update(changes)
@@ -171,9 +175,13 @@ def 启动后台回测(form, mode):
     with 回测进度锁:
         if 回测进度.get("status") in {"starting", "running", "finalizing", "stopping"}:
             return None
+        # 每次真正启动新回测前清理上一次交互回测产物，避免逐股票回放
+        # HTML/CSV 长期累积占满磁盘；只清理受控的交互回测目录。
+        清理旧交互回测数据()
         task_id = uuid.uuid4().hex
         started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         回测停止事件.clear()
+        回测拒绝订单明细.clear()
         回测进度.clear()
         回测进度.update({
             "task_id": task_id, "status": "starting", "mode": mode,
@@ -391,6 +399,27 @@ def 启动后台回测(form, mode):
     .order-preview strong { color: var(--accent-2); }
     .order-preview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; margin-top: 5px; color: var(--muted); }
     .order-preview-grid span:last-child { color: var(--ink); text-align: right; }
+    .fund-plan { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(180, 83, 9, 0.18); }
+    .fund-plan > b { display: block; margin-bottom: 5px; color: var(--accent-2); }
+    .fund-plan-row { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto; gap: 4px 8px; align-items: baseline; padding: 4px 0; border-bottom: 1px dashed rgba(127, 139, 160, 0.24); color: var(--muted); }
+    .fund-plan-row b { color: var(--ink); text-align: right; }
+    .config-subsection {
+      grid-column: 1 / -1;
+      margin: 4px 0 -2px;
+      padding: 7px 9px;
+      border-left: 3px solid var(--accent);
+      background: rgba(15, 118, 110, 0.06);
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .config-subsection-note {
+      grid-column: 1 / -1;
+      margin: -5px 2px 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+    }
     .section {
       margin: 0 0 12px;
       padding: 12px;
@@ -522,6 +551,17 @@ def 启动后台回测(form, mode):
     .selected-item { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; border: 0; padding: 3px 0; background: transparent; color: var(--ink); cursor: pointer; text-align: left; font-size: 12px; }
     .selected-item:hover { color: var(--accent); }
     .selected-empty { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .selected-account-summary { padding: 7px 9px; border: 1px solid rgba(180, 83, 9, 0.2); border-radius: 8px; background: rgba(180, 83, 9, 0.06); color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .selected-account-summary strong { color: var(--ink); }
+    .rejection-summary { margin-top: 8px; padding: 8px 10px; border: 1px solid rgba(180, 83, 9, 0.2); border-radius: 8px; background: rgba(180, 83, 9, 0.06); color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .rejection-summary strong { color: var(--accent-2); }
+    .rejection-details { margin-top: 8px; border: 1px solid rgba(180, 83, 9, 0.2); border-radius: 8px; background: rgba(255,255,255,0.58); }
+    .rejection-details summary { padding: 8px 10px; color: var(--accent-2); cursor: pointer; font-size: 11px; font-weight: 700; }
+    .rejection-table-wrap { max-height: 320px; overflow: auto; border-top: 1px solid rgba(180, 83, 9, 0.12); }
+    .rejection-table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 10px; }
+    .rejection-table th, .rejection-table td { padding: 6px 8px; border-bottom: 1px solid rgba(127, 139, 160, 0.18); text-align: left; white-space: nowrap; }
+    .rejection-table th { position: sticky; top: 0; background: #fffaf0; color: var(--muted); }
+    .rejection-table td:nth-child(4) { white-space: normal; min-width: 220px; color: var(--accent-2); }
     .config-fold[data-stage] > summary::after { content: attr(data-hint); margin-left: auto; color: var(--muted); font-size: 10px; font-weight: 400; }
     .module-params {
       display: grid;
@@ -529,6 +569,11 @@ def 启动后台回测(form, mode):
       gap: 8px;
       padding: 0 10px 10px 36px;
     }
+    .advanced-params { margin: 7px 0 0 36px; }
+    .advanced-params summary { color: var(--muted); cursor: pointer; font-size: 11px; list-style: none; }
+    .advanced-params summary::-webkit-details-marker { display: none; }
+    .advanced-params summary::before { content: "＋ "; color: var(--accent); }
+    .advanced-params[open] summary::before { content: "－ "; }
     .param-row {
       display: grid;
       grid-template-columns: minmax(88px, 0.9fr) minmax(0, 1.2fr);
@@ -797,6 +842,7 @@ def 启动后台回测(form, mode):
     }
     @media (max-width: 720px) {
       .grid, .metrics-grid { grid-template-columns: 1fr; }
+      .fund-plan-row { grid-template-columns: 1fr auto; }
       .page { padding: 12px; }
       .sidebar, .status, .metrics, .report-shell { padding: 16px; }
     }
@@ -843,8 +889,10 @@ def 启动后台回测(form, mode):
           </div>
         </div>
         <details class="config-fold">
-          <summary><span>① 公共指标、成交与网格参数</span><span class="fold-count">RSI · ATR · 哨兵价 · 网格 · 成本</span></summary>
+          <summary><span>策略与账户设置</span><span class="fold-count">资金 · 指标 · 网格 · 成交</span></summary>
           <div class="fold-body grid">
+          <div class="config-subsection">账户资金与风险边界</div>
+          <div class="config-subsection-note">账户资金决定可用上限；下面的首笔金额和网格计划决定策略想申请多少，最终仍由账户限制审批。</div>
           <label class="checkbox" style="margin: 0 0 12px;">
             <input type="checkbox" name="single_full_position_mode" {% if form.single_full_position_mode %}checked{% endif %}>
             <span>单股满仓快捷模式</span>
@@ -863,8 +911,9 @@ def 启动后台回测(form, mode):
             <input type="date" name="single_end" value="{{ form.single_end }}">
           </div>
           <div>
-            <label>策略单笔请求金额</label>
+            <label>资金基准金额</label>
             <input type="number" step="10000" name="single_base_position" value="{{ form.single_base_position }}">
+            <p class="compact-note">关闭网格时作为首笔金额；启用网格时作为网格预算基准，实际首笔金额见下方预览。</p>
           </div>
           <div>
             <label>最大持仓数（单股固定为1）</label>
@@ -886,6 +935,8 @@ def 启动后台回测(form, mode):
             <label>买入流动性上限比例</label>
             <input type="number" step="0.001" name="single_liquidity_limit" value="{{ form.single_liquidity_limit }}">
           </div>
+          <div class="config-subsection">指标与入场执行</div>
+          <div class="config-subsection-note">指标产生信号，成交设置决定信号出现后采用什么价格和时机。</div>
           <div>
             <label>RSI周期</label>
             <input type="number" step="1" name="single_rsi_period" value="{{ form.single_rsi_period }}">
@@ -899,35 +950,52 @@ def 启动后台回测(form, mode):
             </select>
           </div>
           <div>
-            <label>买入时机</label>
+            <label>首次开仓时机</label>
             <select name="single_entry_timing">
-              <option value="precomputed_stop_entry" {% if form.single_entry_timing == 'precomputed_stop_entry' %}selected{% endif %}>严格预挂单（推荐）</option>
-              <option value="close_confirm_next_open" {% if form.single_entry_timing == 'close_confirm_next_open' %}selected{% endif %}>收盘确认后次根开盘</option>
-              <option value="tb_replay" {% if form.single_entry_timing == 'tb_replay' %}selected{% endif %}>TB复刻模式（最高价RSI同根对照）</option>
-              <option value="same_bar_entry" {% if form.single_entry_timing in ('same_bar_entry', 'legacy_same_bar_lookahead', 'intrabar_breakout') %}selected{% endif %}>本根形成哨兵价后立即买入（无前视）</option>
+              <option value="same_bar_entry" {% if form.single_entry_timing in ('same_bar_entry', 'legacy_same_bar_lookahead', 'intrabar_breakout') %}selected{% endif %}>本根形成哨兵价后立即买入</option>
+              <option value="precomputed_stop_entry" {% if form.single_entry_timing == 'precomputed_stop_entry' %}selected{% endif %}>下一根K线执行（预计算哨兵价·本根最高价触发）</option>
+              <option value="close_confirm_next_open" hidden {% if form.single_entry_timing == 'close_confirm_next_open' %}selected{% endif %}>收盘确认后次根开盘（兼容旧配置）</option>
+              <option value="tb_replay" hidden {% if form.single_entry_timing == 'tb_replay' %}selected{% endif %}>TB复刻模式（兼容旧配置）</option>
             </select>
+            <span hidden>严格预挂单（推荐） TB复刻模式（最高价RSI同根对照）</span>
           </div>
+          <div class="config-subsection">网格资金计划</div>
+          <div class="config-subsection-note">网格只决定后续加仓金额，不改变信号触发条件；预览会列出 5 层金额和累计投入。</div>
+          <label class="checkbox grid-enabled-toggle">
+            <input type="checkbox" name="single_grid_enabled" {% if form.single_switch_扩展因子_grid_addon %}checked{% endif %}>
+            <span>启用网格加仓</span>
+            <span class="module-status">关闭时只执行首笔开仓</span>
+          </label>
           <div>
-            <label>网格加仓模式（实验）</label>
+            <label>网格模式</label>
             <select name="single_grid_mode">
-              <option value="fixed_tranche" {% if form.single_grid_mode == 'fixed_tranche' %}selected{% endif %}>固定分层（实验）</option>
-              <option value="linear" {% if form.single_grid_mode == 'linear' %}selected{% endif %}>线性递增（实验）</option>
-              <option value="multiplier" {% if form.single_grid_mode == 'multiplier' %}selected{% endif %}>倍数加仓（实验）</option>
-              <option value="lifecycle_budget" {% if form.single_grid_mode == 'lifecycle_budget' %}selected{% endif %}>生命周期预算（25/15/20/20/20）</option>
+              <option value="fixed_tranche" {% if form.single_grid_mode == 'fixed_tranche' %}selected{% endif %}>固定分层：每层同额</option>
+              <option value="multiplier" {% if form.single_grid_mode == 'multiplier' %}selected{% endif %}>倍数加仓：1/2/4/8/16</option>
+              <option value="linear" hidden {% if form.single_grid_mode == 'linear' %}selected{% endif %}>线性递增（兼容旧配置）</option>
+              <option value="lifecycle_budget" hidden {% if form.single_grid_mode == 'lifecycle_budget' %}selected{% endif %}>生命周期预算（兼容旧配置）</option>
             </select>
           </div>
           <div>
-            <label>首次开仓占网格预算比例</label>
+            <label>网格加仓时机</label>
+            <select name="single_grid_entry_timing">
+              <option value="same_bar_entry" {% if form.single_grid_entry_timing == 'same_bar_entry' %}selected{% endif %}>本根形成哨兵价后立即买入</option>
+              <option value="precomputed_stop_entry" {% if form.single_grid_entry_timing == 'precomputed_stop_entry' %}selected{% endif %}>下一根K线执行（预计算哨兵价·本根最高价触发）</option>
+            </select>
+          </div>
+          <div>
+            <label>网格首笔比例</label>
             <input type="number" step="0.01" min="0.01" max="1" name="single_grid_initial_ratio" value="{{ form.single_grid_initial_ratio }}">
           </div>
           <div>
-            <label>固定分层每层比例</label>
+            <label>固定模式每层比例</label>
             <input type="number" step="0.01" min="0.01" max="1" name="single_grid_followup_ratio" value="{{ form.single_grid_followup_ratio }}">
           </div>
           <div>
-            <label>倍数加仓倍数</label>
+            <label>倍数模式基数</label>
             <input type="number" step="0.1" min="1" name="single_grid_multiplier" value="{{ form.single_grid_multiplier }}">
           </div>
+          <div class="config-subsection">成交成本与退出</div>
+          <div class="config-subsection-note">这组参数只影响成交成本或卖出，不参与首笔资金和网格金额计算。</div>
           <div>
             <label>RSI均线周期</label>
             <input type="number" step="1" name="single_rsi_ma_period" value="{{ form.single_rsi_ma_period }}">
@@ -993,7 +1061,7 @@ def 启动后台回测(form, mode):
               </label>
               <div class="module-meta"><span>{{ item.effect }}</span>{% if item.combination %}<span>{{ item.combination }}</span>{% endif %}</div>
               {% if item.params %}
-              <div class="module-params">
+              <details class="advanced-params"><summary>高级参数</summary><div class="module-params">
                 {% for param in item.params %}
                 <div class="param-row">
                   <label>{{ param.key }}</label>
@@ -1006,7 +1074,7 @@ def 启动后台回测(form, mode):
                   {% endif %}
                 </div>
                 {% endfor %}
-              </div>
+              </div></details>
               {% else %}
               <div class="param-note">{{ item.param_note }}</div>
               {% endif %}
@@ -1029,8 +1097,10 @@ def 启动后台回测(form, mode):
           <span class="mode-badge">共享真实账户</span>
         </div>
         <details class="config-fold" data-account-section="multi">
-          <summary><span>多股账户与回测对象</span><span class="fold-count">资金 · 日期 · 股票池 · 组合约束</span></summary>
+          <summary><span>账户资金与回测对象</span><span class="fold-count">资金 · 日期 · 股票池 · 风险边界</span></summary>
           <div class="fold-body grid">
+          <div class="config-subsection">账户资金与风险边界</div>
+          <div class="config-subsection-note">账户资金决定组合可用上限；策略资金计划决定申请金额，组合账户最后统一审批。</div>
           <div>
             <label>组合初始资金</label>
             <input type="number" step="10000" name="multi_capital" value="{{ form.multi_capital }}">
@@ -1043,25 +1113,32 @@ def 启动后台回测(form, mode):
             </select>
             <p class="compact-note">共享账户下，每只股票直接复用单股规则执行器；组合层只审批现金、单只仓位、总仓位和持仓数量，不会重新计算成交或网格。</p>
           </div>
+          <div class="config-subsection">网格资金计划</div>
+          <div class="config-subsection-note">网格只决定后续加仓金额；下方预览会显示 20/30/MA/70 的首笔金额、5 层金额和累计投入。</div>
+          <label class="checkbox grid-enabled-toggle">
+            <input type="checkbox" name="multi_grid_enabled" {% if form.multi_switch_扩展因子_grid_addon %}checked{% endif %}>
+            <span>启用网格加仓</span>
+            <span class="module-status">关闭时只执行首笔开仓</span>
+          </label>
           <div>
-            <label>网格加仓模式（实验）</label>
+            <label>网格模式</label>
             <select name="multi_grid_mode">
-              <option value="fixed_tranche" {% if form.multi_grid_mode == 'fixed_tranche' %}selected{% endif %}>固定分层（实验）</option>
-              <option value="linear" {% if form.multi_grid_mode == 'linear' %}selected{% endif %}>线性递增（实验）</option>
-              <option value="multiplier" {% if form.multi_grid_mode == 'multiplier' %}selected{% endif %}>倍数加仓（实验）</option>
-              <option value="lifecycle_budget" {% if form.multi_grid_mode == 'lifecycle_budget' %}selected{% endif %}>生命周期预算（25/15/20/20/20）</option>
+              <option value="fixed_tranche" {% if form.multi_grid_mode == 'fixed_tranche' %}selected{% endif %}>固定分层：每层同额</option>
+              <option value="multiplier" {% if form.multi_grid_mode == 'multiplier' %}selected{% endif %}>倍数加仓：1/2/4/8/16</option>
+              <option value="linear" hidden {% if form.multi_grid_mode == 'linear' %}selected{% endif %}>线性递增（兼容旧配置）</option>
+              <option value="lifecycle_budget" hidden {% if form.multi_grid_mode == 'lifecycle_budget' %}selected{% endif %}>生命周期预算（兼容旧配置）</option>
             </select>
           </div>
           <div>
-            <label>首次开仓占网格预算比例</label>
+            <label>网格首笔比例</label>
             <input type="number" step="0.01" min="0.01" max="1" name="multi_grid_initial_ratio" value="{{ form.multi_grid_initial_ratio }}">
           </div>
           <div>
-            <label>固定分层每层比例</label>
+            <label>固定模式每层比例</label>
             <input type="number" step="0.01" min="0.01" max="1" name="multi_grid_followup_ratio" value="{{ form.multi_grid_followup_ratio }}">
           </div>
           <div>
-            <label>倍数加仓倍数</label>
+            <label>倍数模式基数</label>
             <input type="number" step="0.1" min="1" name="multi_grid_multiplier" value="{{ form.multi_grid_multiplier }}">
           </div>
           <div>
@@ -1077,9 +1154,9 @@ def 启动后台回测(form, mode):
             <input type="date" name="multi_end" value="{{ form.multi_end }}">
           </div>
           <div>
-            <label>策略单笔请求金额</label>
+            <label>资金基准金额</label>
             <input type="number" step="10000" name="multi_base_position" value="{{ form.multi_base_position }}">
-            <p class="compact-note">交易核心产生请求金额；组合账户只能批准、部分批准或拒绝，不会重算成交价格、网格层级或手续费。</p>
+            <p class="compact-note">关闭网格时作为首笔金额；启用网格时作为网格预算基准，实际首笔金额和层级金额见下方预览。</p>
           </div>
           <div>
             <label>最大持仓数</label>
@@ -1110,6 +1187,8 @@ def 启动后台回测(form, mode):
             <label>买入流动性上限比例</label>
             <input type="number" step="0.001" name="multi_liquidity_limit" value="{{ form.multi_liquidity_limit }}">
           </div>
+          <div class="config-subsection">指标与入场执行</div>
+          <div class="config-subsection-note">指标负责产生信号，成交设置负责决定信号如何成交。</div>
           <div>
             <label>RSI周期</label>
             <input type="number" step="1" name="multi_rsi_period" value="{{ form.multi_rsi_period }}">
@@ -1123,14 +1202,23 @@ def 启动后台回测(form, mode):
             </select>
           </div>
           <div>
-            <label>买入时机</label>
+            <label>首次开仓时机</label>
             <select name="multi_entry_timing">
-              <option value="precomputed_stop_entry" {% if form.multi_entry_timing == 'precomputed_stop_entry' %}selected{% endif %}>严格预挂单（推荐）</option>
-              <option value="close_confirm_next_open" {% if form.multi_entry_timing == 'close_confirm_next_open' %}selected{% endif %}>收盘确认后次根开盘</option>
-              <option value="tb_replay" {% if form.multi_entry_timing == 'tb_replay' %}selected{% endif %}>TB复刻模式（最高价RSI同根对照）</option>
-              <option value="same_bar_entry" {% if form.multi_entry_timing in ('same_bar_entry', 'legacy_same_bar_lookahead', 'intrabar_breakout') %}selected{% endif %}>本根形成哨兵价后立即买入（无前视）</option>
+              <option value="same_bar_entry" {% if form.multi_entry_timing in ('same_bar_entry', 'legacy_same_bar_lookahead', 'intrabar_breakout') %}selected{% endif %}>本根形成哨兵价后立即买入</option>
+              <option value="precomputed_stop_entry" {% if form.multi_entry_timing == 'precomputed_stop_entry' %}selected{% endif %}>下一根K线执行（预计算哨兵价·本根最高价触发）</option>
+              <option value="close_confirm_next_open" hidden {% if form.multi_entry_timing == 'close_confirm_next_open' %}selected{% endif %}>收盘确认后次根开盘（兼容旧配置）</option>
+              <option value="tb_replay" hidden {% if form.multi_entry_timing == 'tb_replay' %}selected{% endif %}>TB复刻模式（兼容旧配置）</option>
             </select>
           </div>
+          <div>
+            <label>网格加仓时机</label>
+            <select name="multi_grid_entry_timing">
+              <option value="same_bar_entry" {% if form.multi_grid_entry_timing == 'same_bar_entry' %}selected{% endif %}>本根形成哨兵价后立即买入</option>
+              <option value="precomputed_stop_entry" {% if form.multi_grid_entry_timing == 'precomputed_stop_entry' %}selected{% endif %}>下一根K线执行（预计算哨兵价·本根最高价触发）</option>
+            </select>
+          </div>
+          <div class="config-subsection">成交成本与退出</div>
+          <div class="config-subsection-note">这组参数只影响成交成本或卖出，不参与资金计划计算。</div>
           <div>
             <label>RSI均线周期</label>
             <input type="number" step="1" name="multi_rsi_ma_period" value="{{ form.multi_rsi_ma_period }}">
@@ -1208,7 +1296,7 @@ def 启动后台回测(form, mode):
               </label>
               <div class="module-meta"><span>{{ item.effect }}</span>{% if item.combination %}<span>{{ item.combination }}</span>{% endif %}</div>
               {% if item.params %}
-              <div class="module-params">
+              <details class="advanced-params"><summary>高级参数</summary><div class="module-params">
                 {% for param in item.params %}
                 <div class="param-row">
                   <label>{{ param.key }}</label>
@@ -1221,7 +1309,7 @@ def 启动后台回测(form, mode):
                   {% endif %}
                 </div>
                 {% endfor %}
-              </div>
+              </div></details>
               {% else %}
               <div class="param-note">{{ item.param_note }}</div>
               {% endif %}
@@ -1264,6 +1352,16 @@ def 启动后台回测(form, mode):
         <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
         <div class="progress-meta"><span id="progressCount">0 / 0</span><span id="progressTrades">实际成交 0 笔</span><button id="stopBacktest" class="secondary" type="button">停止回测</button><a id="checkpointLink" class="secondary" href="/api/backtest-checkpoint" target="_blank">查看最近检查点</a></div>
         <div id="liveMetrics" class="live-metrics"></div>
+        <div id="rejectionSummary" class="rejection-summary"><strong>拒绝订单汇总：</strong> 等待回测数据</div>
+        <details id="rejectionDetails" class="rejection-details" hidden>
+          <summary>逐笔拒绝订单明细（<span id="rejectionDetailCount">0</span> 笔）</summary>
+          <div class="rejection-table-wrap">
+            <table class="rejection-table">
+              <thead><tr><th>股票</th><th>类型</th><th>结果</th><th>原因</th><th>请求股数</th><th>成交股数</th><th>成交价</th><th>时间</th></tr></thead>
+              <tbody id="rejectionDetailRows"></tbody>
+            </table>
+          </div>
+        </details>
         <div id="progressActions" class="progress-actions"></div>
         <div id="progressError" class="progress-error" hidden></div>
       </div>
@@ -1277,15 +1375,6 @@ def 启动后台回测(form, mode):
           <button class="tab-btn {% if active_view == 'stock' %}active{% endif %}" type="button" data-view="stock">当前单票回放</button>
         </div>
         <div class="path">当前股票：{{ form.stock }}</div>
-      </div>
-
-      <div class="panel metrics">
-        <div class="metrics-grid">
-          <div class="metric"><span>总收益率</span><strong id="resultTotalReturn">{{ metrics.total_return }}</strong></div>
-          <div class="metric"><span>最大回撤</span><strong id="resultMaxDrawdown">{{ metrics.max_drawdown }}</strong></div>
-          <div class="metric"><span>胜率</span><strong id="resultWinRate">{{ metrics.win_rate }}</strong></div>
-          <div class="metric"><span>最终权益</span><strong id="resultFinalEquity">{{ metrics.final_equity }}</strong></div>
-        </div>
       </div>
 
       <div class="panel result-card">
@@ -1428,6 +1517,21 @@ def 启动后台回测(form, mode):
     function setField(name, value) { const node = field(name); if (node) node.value = value; }
     function valueOf(name, fallback = '') { const node = field(name); return node ? node.value : fallback; }
     function checked(name) { const node = field(name); return Boolean(node && node.checked); }
+    function gridEnabled(prefix) {
+      const visible = field(`${prefix}_grid_enabled`);
+      const legacy = field(`${prefix}_switch_扩展因子_grid_addon`);
+      return Boolean((visible || legacy) && (visible || legacy).checked);
+    }
+    function syncGridEnabled(prefix, enabled) {
+      const current = field(`${prefix}_switch_扩展因子_grid_addon`);
+      const other = field(`${prefix === 'single' ? 'multi' : 'single'}_switch_扩展因子_grid_addon`);
+      if (current) current.checked = enabled;
+      if (other) other.checked = enabled;
+      const currentVisible = field(`${prefix}_grid_enabled`);
+      const otherVisible = field(`${prefix === 'single' ? 'multi' : 'single'}_grid_enabled`);
+      if (currentVisible) currentVisible.checked = enabled;
+      if (otherVisible) otherVisible.checked = enabled;
+    }
     const accountNames = {
       single: new Set(['single_stock', 'single_capital', 'single_start', 'single_end',
         'single_full_position_mode', 'single_base_position', 'single_max_positions',
@@ -1468,6 +1572,18 @@ def 启动后台回测(form, mode):
       const number = Number(value || 0);
       return Number.isFinite(number) ? new Intl.NumberFormat('zh-CN', {maximumFractionDigits: 0}).format(number) : '--';
     }
+    function numericValue(value, fallback = 0) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : fallback;
+    }
+    function gridPlan(firstAmount, mode, multiplier) {
+      const first = Math.max(0, numericValue(firstAmount));
+      if (mode === 'fixed_tranche') return [1, 1, 1, 1, 1].map(ratio => first * ratio);
+      if (mode === 'linear') return [1, 2, 3, 4, 5].map(ratio => first * ratio);
+      if (mode === 'lifecycle_budget') return [0.25, 0.15, 0.20, 0.20, 0.20].map(ratio => first * ratio);
+      const base = Math.max(1, numericValue(multiplier, 2));
+      return [0, 1, 2, 3, 4].map(level => first * Math.pow(base, level));
+    }
     function updateOrderPreview(prefix) {
       const target = document.querySelector(`[data-order-preview="${prefix}"]`);
       if (!target) return;
@@ -1480,28 +1596,34 @@ def 启动后台回测(form, mode):
       const singleLimit = capital * singleRatio;
       const totalLimit = capital * totalRatio;
       const cashLimit = capital * Math.max(0, 1 - cashFloor);
-      const gridOn = checked(`${prefix}_switch_扩展因子_grid_addon`);
+      const gridOn = gridEnabled(prefix);
+      const gridMode = valueOf(`${prefix}_grid_mode`, 'multiplier');
       const gridRatio = Number(valueOf(`${prefix}_grid_initial_ratio`, 1));
       const strategyRequest = gridOn ? budget * gridRatio : budget;
       const structural = Math.max(0, Math.min(strategyRequest, singleLimit, totalLimit, cashLimit));
       const ruleNames = {rsi_cross_20: 'RSI20', rsi_cross_30: 'RSI30', rsi_cross_ma: 'RSI均线', rsi_cross_70: 'RSI70'};
-      const ruleCaps = Object.entries(ruleNames).flatMap(([id, label]) => {
+      const signalPlan = Object.entries(ruleNames).flatMap(([id, label]) => {
         if (!checked(`${prefix}_switch_买入规则_${id}`)) return [];
-        const cap = valueOf(`${prefix}_param_买入规则_${id}_单笔买入上限`, '未设置');
-        return [`${label} ${money(cap)}元`];
+        const cap = numericValue(valueOf(`${prefix}_param_买入规则_${id}_单笔买入上限`, 0));
+        const factor = Math.max(0.01, Math.min(1, numericValue(valueOf(`${prefix}_param_买入规则_${id}_信号资金系数`, 1), 1)));
+        const first = Math.min(strategyRequest, cap || strategyRequest) * factor;
+        const levels = gridOn ? gridPlan(first, gridMode, valueOf(`${prefix}_grid_multiplier`, 2)) : [first];
+        return [{label, factor, first, levels, total: levels.reduce((sum, value) => sum + value, 0)}];
       });
+      const planRows = signalPlan.map(item => `<div class="fund-plan-row"><span>${item.label} 首笔</span><b>${money(item.first)} 元</b><span>网格</span><b>${item.levels.map(money).join(' / ')} 元</b><span>预计累计</span><b>${money(item.total)} 元</b></div>`).join('');
       target.innerHTML = `<strong>有效订单金额预览</strong>
         <div class="order-preview-grid">
-          <span>网格预算</span><span>${money(budget)} 元</span>
+          <span>资金基准金额</span><span>${money(budget)} 元</span>
           <span>首笔策略请求</span><span>${money(strategyRequest)} 元</span>
-          <span>启用规则单笔上限</span><span>${ruleCaps.join(' / ') || '无启用买入规则'}</span>
+          <span>网格模式</span><span>${gridOn ? (gridMode === 'multiplier' ? '倍数：1/2/4/8/16' : gridMode === 'fixed_tranche' ? '固定：每层同额' : gridMode) : '关闭'}</span>
+          <span>网格预计总额</span><span>${gridOn && signalPlan.length ? money(Math.max(...signalPlan.map(item => item.total))) + ' 元/信号' : '不适用'}</span>
           <span>单只结构上限</span><span>${money(singleLimit)} 元</span>
           <span>总仓位结构上限</span><span>${money(totalLimit)} 元</span>
           <span>现金保留后上限</span><span>${money(cashLimit)} 元</span>
           <span>当前结构性有效上限</span><span>${money(structural)} 元</span>
-          ${gridOn ? `<span>网格首笔比例</span><span>${gridRatio}</span>` : ''}
         </div>
-        <div class="compact-note">普通买入先取“策略单笔请求金额”和当前触发规则上限的较小值，再受账户结构额度、成交价、100股取整和上一日成交额流动性限制；网格加仓按交易核心给出的指定股数审批。</div>`;
+        <div class="fund-plan"><b>各信号资金计划</b>${planRows || '<span>无启用买入信号</span>'}</div>
+        <div class="compact-note">信号资金系数只缩放该信号的首笔金额；网格金额按首笔金额展开。最终成交仍受现金、单只仓位、组合总仓位、成交价、整手和流动性限制。</div>`;
     }
     function updateEffectiveConfig() {
       const mode = uiMode.value;
@@ -1512,16 +1634,20 @@ def 启动后台回测(form, mode):
         same_bar_entry: '本根形成后立即买入',
       }[valueOf('single_entry_timing')] || valueOf('single_entry_timing');
       const prefix = mode === 'single' ? 'single' : 'multi';
-      const grid = checked(`${prefix}_switch_扩展因子_grid_addon`)
+      const gridTiming = {
+        precomputed_stop_entry: '下一根K线执行',
+        same_bar_entry: '本根形成后立即买入',
+      }[valueOf(`${prefix}_grid_entry_timing`)] || valueOf(`${prefix}_grid_entry_timing`);
+      const grid = gridEnabled(prefix)
         ? `网格加仓 ${valueOf(`${prefix}_grid_mode`)} · 首笔${valueOf(`${prefix}_grid_initial_ratio`)} · 倍数${valueOf(`${prefix}_grid_multiplier`)}`
         : '网格加仓关闭';
       const budget = mode === 'single' && checked('single_full_position_mode')
         ? Number(valueOf('single_capital', 0))
         : Number(valueOf(`${prefix}_base_position`, 0));
-      const request = checked(`${prefix}_switch_扩展因子_grid_addon`)
+      const request = gridEnabled(prefix)
         ? budget * Number(valueOf(`${prefix}_grid_initial_ratio`, 1))
         : budget;
-      effectiveConfig.innerHTML = `<b>${mode === 'single' ? '单股账户' : '多股共享账户'}：</b>资金 ${money(valueOf(`${prefix}_capital`))} · 首笔请求 ${money(request)} · ${timing} · ${grid}`;
+      effectiveConfig.innerHTML = `<b>${mode === 'single' ? '单股账户' : '多股共享账户'}：</b>资金 ${money(valueOf(`${prefix}_capital`))} · 首笔请求 ${money(request)} · 首次开仓 ${timing} · 网格 ${gridTiming} · ${grid}`;
       updateOrderPreview('single');
       updateOrderPreview('multi');
     }
@@ -1545,12 +1671,12 @@ def 启动后台回测(form, mode):
           holder.appendChild(note);
         }
         note.textContent = mode === 'lifecycle_budget'
-          ? '总网格预算按首次25%、L1 15%、L2-L4各20%分配；最多加仓4次，成交时按实际价格换算整手股数。'
+          ? '兼容旧配置：按生命周期比例分配，总额以预算为上限。'
           : mode === 'multiplier'
-          ? '先按此比例换算首笔股数；倍数为2时，后续按首笔股数的2、4、8、16倍加仓。'
+          ? '推荐：总层级按1/2/4/8/16倍展开，页面预览显示每层金额和累计金额。'
           : mode === 'linear'
-            ? '先按此比例换算首笔股数，后续依次按首笔股数的2、3、4、5倍加仓。'
-            : '先按此比例换算首笔股数，之后每层使用相同股数。';
+            ? '兼容旧配置：按1/2/3/4/5倍展开。'
+            : '固定模式：5层使用相同金额。';
       }
     }
     ['single', 'multi'].forEach(prefix => {
@@ -1559,6 +1685,14 @@ def 启动后台回测(form, mode):
         node.addEventListener('change', () => updateGridFields(prefix));
         updateGridFields(prefix);
       }
+    });
+    ['single', 'multi'].forEach(prefix => {
+      const toggle = field(`${prefix}_grid_enabled`);
+      if (!toggle) return;
+      toggle.addEventListener('change', () => {
+        syncGridEnabled(prefix, toggle.checked);
+        updateEffectiveConfig();
+      });
     });
     function showMode(mode) {
       uiMode.value = mode;
@@ -1589,7 +1723,7 @@ def 启动后台回测(form, mode):
       document.querySelectorAll('[name^="multi_"]').forEach(node => {
         if (!isStrategyField(node.name, 'multi')) return;
         const holder = node.closest('label.checkbox') || node.closest('div');
-        if (holder) holder.hidden = true;
+        if (holder) holder.hidden = mode !== 'multi';
       });
       const portfolioMode = valueOf('multi_portfolio_mode');
       const workers = field('multi_workers');
@@ -1665,6 +1799,13 @@ def 启动后台回测(form, mode):
             ${cards.map(card => `<button type="button" class="selected-item" data-target="${card.dataset.moduleName}"><span>${card.dataset.moduleLabel}</span><small>${card.dataset.moduleEffect}</small></button>`).join('')}
           </div>`).join('');
       }
+      const prefix = uiMode.value === 'single' ? 'single' : 'multi';
+      const maxPositions = valueOf(`${prefix}_max_positions`, '--');
+      const singleRatio = Number(valueOf(`${prefix}_max_single_ratio`, 0)) * 100;
+      const totalRatio = Number(valueOf(`${prefix}_max_total_ratio`, 0)) * 100;
+      const cashFloor = Number(valueOf(`${prefix}_cash_floor`, 0)) * 100;
+      selectedStrategyGroups.querySelector('.account-limit-group')?.remove();
+      selectedStrategyGroups.insertAdjacentHTML('afterbegin', `<div class="selected-group account-limit-group"><strong>账户限制</strong><div class="selected-account-summary"><strong>最大持仓股数 ${maxPositions} 只</strong> · 单只上限 ${singleRatio.toFixed(1)}% · 总仓位上限 ${totalRatio.toFixed(1)}% · 最低现金 ${cashFloor.toFixed(1)}%</div></div>`);
       strategyCards().forEach(card => {
         const enabled = card.querySelector('input[type="checkbox"]')?.checked;
         const effective = enabled && !card.dataset.moduleEffect.includes('实验模块');
@@ -1727,6 +1868,13 @@ def 启动后台回测(form, mode):
         metric('使用率', pct(live.资金使用率)), metric('买入/卖出', `${live.实际买入 || 0} / ${live.实际卖出 || 0}`),
         metric('拒绝订单', Number(live.拒绝订单 || 0).toLocaleString('zh-CN')), metric('累计费用', live.累计费用 == null ? '--' : Number(live.累计费用).toLocaleString('zh-CN')),
       ].join('');
+      const rejectionSummary = document.getElementById('rejectionSummary');
+      if (rejectionSummary) {
+        const reasons = Object.entries(live.拒绝原因汇总 || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
+        rejectionSummary.innerHTML = reasons.length
+          ? `<strong>拒绝订单汇总：</strong> ${reasons.map(([reason, count]) => `${reason} ${Number(count).toLocaleString('zh-CN')} 笔`).join(' · ')}`
+          : '<strong>拒绝订单汇总：</strong> 暂无拒绝记录';
+      }
       const stopButton = document.getElementById('stopBacktest');
       if (stopButton) stopButton.hidden = state.mode !== 'multi' || !['starting', 'running', 'stopping'].includes(state.status);
       const checkpointLink = document.getElementById('checkpointLink');
@@ -1759,11 +1907,41 @@ def 启动后台回测(form, mode):
         setText('resultOutputName', summary.output_name);
       }
     }
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+    async function pollRejections() {
+      try {
+        const response = await fetch('/api/backtest-rejections', {cache: 'no-store'});
+        const payload = await response.json();
+        const details = document.getElementById('rejectionDetails');
+        const count = document.getElementById('rejectionDetailCount');
+        const rows = document.getElementById('rejectionDetailRows');
+        if (!details || !count || !rows) return;
+        const items = payload.items || [];
+        count.textContent = Number(payload.total || items.length).toLocaleString('zh-CN');
+        details.hidden = !items.length;
+        rows.innerHTML = items.map(item => `<tr>
+          <td>${escapeHtml(item['股票代码'])}</td><td>${escapeHtml(item['类型'])}</td>
+          <td>${escapeHtml(item['结果'])}</td><td>${escapeHtml(item['原因'])}</td>
+          <td>${escapeHtml(item['请求股数'])}</td><td>${escapeHtml(item['成交股数'])}</td>
+          <td>${escapeHtml(item['成交价'])}</td><td>${escapeHtml(item['时间'])}</td>
+        </tr>`).join('');
+      } catch (error) {
+        // 明细接口暂不可用时，不影响主进度显示。
+      }
+    }
     async function pollProgress() {
       try {
         const response = await fetch('/api/backtest-progress', {cache: 'no-store'});
         const state = await response.json();
         renderProgress(state);
+        await pollRejections();
         if (['completed', 'stopped', 'failed'].includes(state.status)) {
           clearInterval(progressTimer);
           // 保留最终状态卡，用户可以直接打开本次报告；不自动跳转或重复提交 POST。
@@ -1773,9 +1951,21 @@ def 启动后台回测(form, mode):
       }
     }
     renderProgress(progressInitial);
-    document.getElementById('stopBacktest')?.addEventListener('click', async () => {
-      await fetch('/api/backtest-stop', {method: 'POST'});
-      pollProgress();
+    pollRejections();
+    document.getElementById('stopBacktest')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      button.textContent = '正在请求停止…';
+      try {
+        const response = await fetch('/api/backtest-stop', {method: 'POST'});
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || '停止请求未被接受');
+        pollProgress();
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = '停止回测';
+        document.getElementById('progressDetail').textContent = error.message || '停止请求失败';
+      }
     });
     if (progressInitial && ['starting', 'running', 'stopping'].includes(progressInitial.status)) {
       progressTimer = setInterval(pollProgress, 1000);
@@ -2025,7 +2215,12 @@ def 构建默认表单():
         "liquidity_limit": 0.01,
         "rsi_period": params["技术指标参数"]["RSI周期"],
         "rsi_price_source": params["技术指标参数"].get("RSI价格源", "close"),
-        "entry_timing": params["买入参数"].get("买入时机模式", "precomputed_stop_entry"),
+        "entry_timing": params["买入参数"].get(
+            "首次开仓时机模式", params["买入参数"].get("买入时机模式", "same_bar_entry")
+        ),
+        "grid_entry_timing": params["买入参数"].get(
+            "网格加仓时机模式", "precomputed_stop_entry"
+        ),
         "rsi_ma_period": params["技术指标参数"]["RSI均线周期"],
         "atr_period": params["技术指标参数"]["ATR周期"],
         "buy_premium": params["交易成本"]["买入溢价"],
@@ -2258,6 +2453,7 @@ def 规范化表单(form_data):
         "multi_universe", "multi_stocks", "multi_start", "multi_end",
         "single_rsi_price_source", "multi_rsi_price_source",
         "single_entry_timing", "multi_entry_timing",
+        "single_grid_entry_timing", "multi_grid_entry_timing",
         "multi_portfolio_mode",
         "single_grid_mode", "multi_grid_mode",
     ]
@@ -2275,6 +2471,10 @@ def 规范化表单(form_data):
             "tb_replay", "same_bar_entry", "legacy_same_bar_lookahead", "intrabar_breakout",
         ):
             normalized[f"{prefix}_entry_timing"] = defaults[f"{prefix}_entry_timing"]
+        if normalized[f"{prefix}_grid_entry_timing"] not in (
+            "precomputed_stop_entry", "same_bar_entry",
+        ):
+            normalized[f"{prefix}_grid_entry_timing"] = defaults[f"{prefix}_grid_entry_timing"]
         if normalized[f"{prefix}_grid_mode"] not in (
                 "fixed_tranche", "linear", "multiplier", "lifecycle_budget"):
             normalized[f"{prefix}_grid_mode"] = defaults[f"{prefix}_grid_mode"]
@@ -2444,6 +2644,8 @@ def 应用表单到配置(config_dir, form):
     parameters["技术指标参数"]["RSI周期"] = form["rsi_period"]
     parameters["技术指标参数"]["RSI价格源"] = form["rsi_price_source"]
     parameters["买入参数"]["买入时机模式"] = form["entry_timing"]
+    parameters["买入参数"]["首次开仓时机模式"] = form["entry_timing"]
+    parameters["买入参数"]["网格加仓时机模式"] = form["grid_entry_timing"]
     parameters["技术指标参数"]["RSI均线周期"] = form["rsi_ma_period"]
     parameters["技术指标参数"]["ATR周期"] = form["atr_period"]
     parameters["技术指标参数"]["信号过期K线数"] = form["signal_expiry_bars"]
@@ -2596,10 +2798,13 @@ def 保存入场时序到正式配置(form):
     parameters = 读取_yaml(parameters_path)
     switches = 读取_yaml(switches_path)
     core = 读取_yaml(core_path)
-    timing = form.get("entry_timing", "precomputed_stop_entry")
+    timing = form.get("entry_timing", "same_bar_entry")
+    grid_timing = form.get("grid_entry_timing", "precomputed_stop_entry")
     same_bar = timing == "same_bar_entry"
     next_bar = timing == "precomputed_stop_entry"
     parameters["买入参数"]["买入时机模式"] = timing
+    parameters["买入参数"]["首次开仓时机模式"] = timing
+    parameters["买入参数"]["网格加仓时机模式"] = grid_timing
     parameters["技术指标参数"]["哨兵价本根形成立即买入"] = same_bar
     switches["模块类别"]["核心模块"].setdefault("same_bar_entry", {})["启用"] = same_bar
     switches["模块类别"]["核心模块"].setdefault("next_bar_entry", {})["启用"] = next_bar
@@ -2632,6 +2837,7 @@ def 提取模式配置(form, prefix):
         "rsi_period": form[f"{strategy_prefix}_rsi_period"],
         "rsi_price_source": form[f"{strategy_prefix}_rsi_price_source"],
         "entry_timing": form[f"{strategy_prefix}_entry_timing"],
+        "grid_entry_timing": form[f"{strategy_prefix}_grid_entry_timing"],
         "rsi_ma_period": form[f"{strategy_prefix}_rsi_ma_period"],
         "atr_period": form[f"{strategy_prefix}_atr_period"],
         "buy_premium": form[f"{strategy_prefix}_buy_premium"],
@@ -2742,7 +2948,7 @@ def 预检查无成交风险(form, mode):
     if capital <= 0:
         issues.append("初始资金必须大于 0。")
     if base_position <= 0:
-        issues.append("策略单笔请求金额必须大于 0。")
+        issues.append("资金基准金额必须大于 0。")
     if not full_position_mode and cash_floor >= 1:
         issues.append("最低现金保留比例不能大于等于 1，否则无法开仓。")
     if max_single_ratio <= 0:
@@ -2752,7 +2958,7 @@ def 预检查无成交风险(form, mode):
     if not full_position_mode and capital > 0 and cash_floor < 1 and capital * (1 - cash_floor) < 10000:
         issues.append("最低现金保留比例过高，剩余可用开仓资金不足1万元，极易无成交。")
     if not full_position_mode and base_position < 10000:
-        issues.append("策略单笔请求金额低于1万元，容易因为100股起买约束导致无成交。")
+        issues.append("资金基准金额低于1万元，容易因为100股起买约束导致无成交。")
     if not any(buy_switches):
         issues.append("买入规则已全部关闭，单股回测不会产生任何成交。")
     if mode == "single" and not str(form.get("single_stock", "")).strip():
@@ -2769,9 +2975,9 @@ def 预检查无成交风险(form, mode):
         if single_ratio <= 0 or single_ratio > 1:
             issues.append("单只股票累计仓位上限比例必须在0到1之间。")
         if base > capital * single_ratio:
-            issues.append("策略单笔请求金额高于组合资金×单只股票累计仓位上限比例；实际会被账户限制，请统一两项设置。")
+            issues.append("资金基准金额高于组合资金×单只股票累计仓位上限比例；实际会被账户限制，请统一两项设置。")
         if base < 10000:
-            issues.append("共享模式的策略单笔请求金额低于1万元，容易无法买入一手。")
+            issues.append("共享模式的资金基准金额低于1万元，容易无法买入一手。")
     if str(form.get(f"{prefix}_entry_timing")) == "precomputed_stop_entry":
         if not form.get(f"{prefix}_switch_核心模块_next_bar_entry"):
             issues.append("严格预挂单模式必须启用“下一根执行”，否则不会执行任何买入检查。")
@@ -3028,7 +3234,8 @@ def 运行交互回测(form, progress=None):
                 {"label": "股票代码", "value": form["stock"]},
                 {"label": "时间区间", "value": f"{form['start']} ~ {form['end']}"},
                 {"label": "RSI价格源", "value": {"high": "最高价", "close": "收盘价", "low": "最低价"}.get(form["rsi_price_source"], form["rsi_price_source"])},
-                {"label": "买入时机", "value": 买入时机名称(form["entry_timing"])},
+                {"label": "首次开仓时机", "value": 买入时机名称(form["entry_timing"])},
+                {"label": "网格加仓时机", "value": 买入时机名称(form["grid_entry_timing"])},
                 {"label": "时序审计", "value": result.get("时序审计", {}).get("结论", "--")},
                 {"label": "初始资金", "value": 格式化金额(form["capital"])},
                 {"label": "总收益率", "value": 格式化百分比(result.get("总收益率", 0))},
@@ -3168,6 +3375,8 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
     config_lines.insert(0, f"<div><b>资金模式</b>：{summary.get('资金模式', '等额独立资金池')}</div>")
     config_lines.insert(1, f"<div><b>股票池</b>：{summary.get('股票池', '沪深300')}（当前成分快照）</div>")
     config_lines.insert(1, f"<div><b>网格加仓模式</b>：{ {'fixed_tranche': '固定分层（实验）', 'linear': '线性递增（2/3/4/5倍）', 'multiplier': '倍数加仓（2/4/8/16倍）', 'lifecycle_budget': '生命周期预算（25/15/20/20/20）'}.get(summary.get('网格加仓模式', form.get('grid_mode', 'multiplier')), '未识别') }</div>")
+    config_lines.insert(2, f"<div><b>首次开仓时机</b>：{summary.get('首次开仓时机', 买入时机名称(form.get('entry_timing', 'same_bar_entry')))}</div>")
+    config_lines.insert(3, f"<div><b>网格加仓时机</b>：{summary.get('网格加仓时机', 买入时机名称(form.get('grid_entry_timing', 'precomputed_stop_entry')))}</div>")
     audit_by_stock = {}
     legacy_stock_summary = {}
     if summary.get("资金审计"):
@@ -3275,7 +3484,7 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
     )
     page = page.replace(
         '</style></head>',
-        '<style>.chart-pop{position:fixed !important;top:0 !important;right:0 !important;bottom:0 !important;left:0 !important;z-index:30;display:none !important;align-items:center;justify-content:center;padding:5vh 5vw;margin:0 !important;background:rgba(4,7,12,.76)}.chart-pop.open{display:flex !important}.chart-dialog{width:min(1280px,90vw);height:min(760px,88vh);max-height:88vh;display:flex;flex-direction:column;background:#111827;border:1px solid #35425a;border-radius:8px;overflow:hidden}.chart-dialog-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;font-size:13px;font-weight:700;border-bottom:1px solid var(--line)}.chart-dialog .chart-card{flex:1;margin:10px;min-height:0}</style></head>',
+        '</style><style>.chart-pop{position:fixed !important;top:0 !important;right:0 !important;bottom:0 !important;left:0 !important;z-index:30;display:none !important;align-items:center;justify-content:center;padding:5vh 5vw;margin:0 !important;background:rgba(4,7,12,.76)}.chart-pop.open{display:flex !important}.chart-dialog{width:min(1280px,90vw);height:min(760px,88vh);max-height:88vh;display:flex;flex-direction:column;background:#111827;border:1px solid #35425a;border-radius:8px;overflow:hidden}.chart-dialog-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;font-size:13px;font-weight:700;border-bottom:1px solid var(--line)}.chart-dialog .chart-card{flex:1;margin:10px;min-height:0}</style></head>',
         1,
     )
     page = page.replace(
@@ -3438,6 +3647,7 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
         portfolio = {
             "组合权益曲线": shared_run["组合权益曲线"],
             "资金审计": dict(account.审批统计),
+            "拒绝原因汇总": dict((shared_run.get("live") or {}).get("拒绝原因汇总", {})),
             "当前现金": account.现金,
             "当前持仓数量": len(account.持仓),
             "组合成交明细": audit_rows,
@@ -3461,6 +3671,8 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
         "资金模式": "共享账户" if form.get("portfolio_mode") == "shared_grid" else "等额独立资金池",
         "股票池": benchmark_config["name"],
         "网格加仓模式": form.get("grid_mode", "multiplier"),
+        "首次开仓时机": 买入时机名称(form.get("entry_timing", "same_bar_entry")),
+        "网格加仓时机": 买入时机名称(form.get("grid_entry_timing", "precomputed_stop_entry")),
         "组合初始资金": 组合初始资金,
         "组合最终权益": 组合最终权益,
         "组合总收益率": (组合最终权益 - 组合初始资金) / max(组合初始资金, 1.0),
@@ -3471,6 +3683,7 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
     if portfolio:
         summary.update({
             "资金审计": portfolio.get("资金审计", {}),
+            "拒绝原因汇总": portfolio.get("拒绝原因汇总", {}),
             "当前现金": portfolio.get("当前现金", 0.0),
             "当前持仓数量": portfolio.get("当前持仓数量", 0),
             "组合成交明细": portfolio.get("组合成交明细", []),
@@ -3495,6 +3708,8 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
             "并行进程数": form["workers"],
             "RSI价格源": form["rsi_price_source"],
             "买入时机模式": form["entry_timing"],
+            "首次开仓时机模式": form["entry_timing"],
+            "网格加仓时机模式": form["grid_entry_timing"],
             "汇总": summary,
             "股票明细": details,
             "组合权益曲线": 组合曲线,
@@ -3533,6 +3748,7 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
                 value for key, value in summary.get("资金审计", {}).items()
                 if "拦截" in key
             )),
+            "拒绝原因汇总": summary.get("拒绝原因汇总", {}),
         },
         "metrics": {
             "total_return": 格式化小数百分比(summary.get("组合总收益率", 0)),
@@ -3553,7 +3769,8 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
                 {"label": "每股资金池", "value": 格式化金额(每股资金)},
                 {"label": "资金模式", "value": summary["资金模式"]},
                 {"label": "RSI价格源", "value": {"high": "最高价", "close": "收盘价", "low": "最低价"}.get(form["rsi_price_source"], form["rsi_price_source"])},
-                {"label": "买入时机", "value": 买入时机名称(form["entry_timing"])},
+                {"label": "首次开仓时机", "value": 买入时机名称(form["entry_timing"])},
+                {"label": "网格加仓时机", "value": 买入时机名称(form["grid_entry_timing"])},
                 {"label": "买入总数", "value": str(summary.get("买入总数", 0))},
                 {"label": "卖出总数", "value": str(summary.get("卖出总数", 0))},
                 {"label": "总成交笔数", "value": str(summary.get("总交易数", 0))},
@@ -3877,6 +4094,14 @@ def 回测实时指标接口():
     })
 
 
+@应用.route("/api/backtest-rejections")
+def 回测拒绝订单接口():
+    task_id = 读取回测进度().get("task_id")
+    with 回测进度锁:
+        items = copy.deepcopy(回测拒绝订单明细.get(task_id, [])) if task_id else []
+    return jsonify({"task_id": task_id, "total": len(items), "items": items})
+
+
 @应用.route("/api/backtest-stop", methods=["POST"])
 def 停止回测接口():
     with 回测进度锁:
@@ -3918,6 +4143,11 @@ def 查看多股报告(token):
         return Response("多股报告不存在或已失效。", status=404, content_type="text/plain; charset=utf-8")
     with open(最近多股报告["path"], encoding="utf-8") as source:
         html = source.read()
+    # 兼容此前生成的报告：旧版本把弹窗样式嵌进了主样式，浏览器会解析出异常的 head/CSS 结构。
+    style_marker = "<style>.chart-pop{position:fixed !important;"
+    style_pos = html.find(style_marker)
+    if style_pos >= 0 and html[max(0, style_pos - len("</style>")):style_pos] != "</style>":
+        html = html[:style_pos] + "</style>" + html[style_pos:]
     html = html.replace(
         ".chart-pop{position:fixed;inset:0;z-index:30;",
         ".chart-pop{position:fixed !important;top:0 !important;right:0 !important;bottom:0 !important;left:0 !important;z-index:30;",
@@ -3936,6 +4166,11 @@ def 查看多股报告(token):
     html = html.replace(
         'data-close-chart>关闭',
         'data-close-chart onclick="this.closest(\'.chart-pop\').classList.remove(\'open\')">关闭',
+    )
+    html = html.replace(
+        "</body>",
+        "<script>document.addEventListener('click',e=>{const b=e.target.closest('[data-close-chart]');if(b){e.preventDefault();e.stopPropagation();b.closest('.chart-pop')?.classList.remove('open')}});document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.chart-pop.open').forEach(p=>p.classList.remove('open'))});</script></body>",
+        1,
     )
     return Response(html, mimetype="text/html")
 
@@ -4017,7 +4252,7 @@ def main():
     if not args.no_open:
         webbrowser.open(url)
     try:
-        应用.run(host=args.host, port=args.port, debug=False)
+        应用.run(host=args.host, port=args.port, debug=False, threaded=True)
     except SystemExit as exc:
         code = getattr(exc, "code", None)
         message = str(code) if code is not None else str(exc)

@@ -35,7 +35,10 @@ def test_page_parameters_write_to_experiment_snapshot(tmp_path):
     form = 构建默认表单()
     form["single_rsi_price_source"] = "high"
     form["single_entry_timing"] = "close_confirm_next_open"
+    form["single_grid_entry_timing"] = "precomputed_stop_entry"
     应用表单到配置(snapshot, 提取模式配置(form, "single"))
     parameters = yaml.safe_load((snapshot / "参数配置.yaml").read_text(encoding="utf-8"))
     assert parameters["技术指标参数"]["RSI价格源"] == "high"
     assert parameters["买入参数"]["买入时机模式"] == "close_confirm_next_open"
+    assert parameters["买入参数"]["首次开仓时机模式"] == "close_confirm_next_open"
+    assert parameters["买入参数"]["网格加仓时机模式"] == "precomputed_stop_entry"
