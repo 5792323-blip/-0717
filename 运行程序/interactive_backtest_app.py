@@ -83,6 +83,15 @@ from 组合回测.统一多股执行器 import 运行共享账户回测
         "curve_key": "中证500权益", "return_key": "中证500收益率",
     },
 }
+指数基准配置 = {
+    "hs300": 股票池配置["hs300"],
+    "zz500": 股票池配置["zz500"],
+    "csi1000": {
+        "name": "中证1000",
+        "benchmark_path": os.path.join(项目根目录, "数据模块", "大盘数据", "csi1000_日K线.pkl"),
+        "curve_key": "中证1000权益", "return_key": "中证1000收益率",
+    },
+}
 
 
 def 读取回测进度():
@@ -670,6 +679,15 @@ def 启动后台回测(form, mode):
     .result-card {
       padding: 16px 18px;
     }
+    .return-curve-card { padding-bottom: 12px; }
+    .return-curve-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .return-curve-title { font-weight: 700; }
+    .return-curve-benchmark { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+    .return-curve-benchmark select { width: auto; min-width: 116px; padding: 6px 9px; border-radius: 8px; font-size: 12px; }
+    .return-curve-wrap { position: relative; height: 230px; margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.48); overflow: hidden; }
+    #liveReturnChart { display: block; width: 100%; height: 100%; }
+    .return-curve-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; pointer-events: none; }
+    @media (max-width: 720px) { .return-curve-head { align-items: flex-start; flex-direction: column; } .return-curve-benchmark select { min-width: 0; } }
     .status {
       display: flex;
       flex-wrap: wrap;
@@ -1265,6 +1283,15 @@ def 启动后台回测(form, mode):
             <p class="compact-note">指数成分为当前成分快照；自定义列表优先使用下方输入。</p>
           </div>
           <div>
+            <label>收益曲线对比指数</label>
+            <select name="multi_benchmark">
+              <option value="hs300" {% if form.multi_benchmark == 'hs300' %}selected{% endif %}>沪深300</option>
+              <option value="zz500" {% if form.multi_benchmark == 'zz500' %}selected{% endif %}>中证500</option>
+              <option value="csi1000" {% if form.multi_benchmark == 'csi1000' %}selected{% endif %}>中证1000</option>
+            </select>
+            <p class="compact-note">只影响实时收益曲线和超额收益，不改变股票池、交易规则或成交。</p>
+          </div>
+          <div>
             <label>自定义股票列表（逗号分隔）</label>
             <textarea name="multi_stocks">{{ form.multi_stocks }}</textarea>
           </div>
@@ -1377,33 +1404,18 @@ def 启动后台回测(form, mode):
         <div class="path">当前股票：{{ form.stock }}</div>
       </div>
 
-      <div class="panel result-card">
-        <div class="result-grid">
-          <div class="result-box"><span>回测类型</span><strong id="resultMode">{{ backtest_result.mode }}</strong></div>
-          <div class="result-box"><span>样本数量</span><strong id="resultSampleCount">{{ backtest_result.sample_count }}</strong></div>
-          <div class="result-box"><span>结果文件</span><strong id="resultOutputName">{{ backtest_result.output_name }}</strong></div>
+      <div class="panel result-card return-curve-card">
+        <div class="return-curve-head">
+          <span class="return-curve-title">实时收益跟踪：策略 vs <span id="returnCurveBenchmark">{{ form.multi_benchmark == 'zz500' and '中证500' or (form.multi_benchmark == 'csi1000' and '中证1000' or '沪深300') }}</span></span>
+          <label class="return-curve-benchmark">对比指数
+            <select id="returnCurveBenchmarkSelect">
+              <option value="hs300" {% if form.multi_benchmark == 'hs300' %}selected{% endif %}>沪深300</option>
+              <option value="zz500" {% if form.multi_benchmark == 'zz500' %}selected{% endif %}>中证500</option>
+              <option value="csi1000" {% if form.multi_benchmark == 'csi1000' %}selected{% endif %}>中证1000</option>
+            </select>
+          </label>
         </div>
-        {% if backtest_result.rows %}
-        <table class="result-table">
-          <thead>
-            <tr>
-              <th>项目</th>
-              <th>数值</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in backtest_result.rows %}
-            <tr>
-              <td>{{ row.label }}</td>
-              <td>{{ row.value }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        {% endif %}
-        {% if backtest_result.note %}
-        <div class="result-note">{{ backtest_result.note }}</div>
-        {% endif %}
+        <div class="return-curve-wrap"><canvas id="liveReturnChart"></canvas><div id="returnCurveEmpty" class="return-curve-empty">回测开始后显示实时曲线</div></div>
       </div>
 
       {% if backtest_result.diagnostics %}
@@ -1845,6 +1857,91 @@ def 启动后台回测(form, mode):
     const progressBox = document.getElementById('backtestProgress');
     const progressInitial = {{ progress|tojson }};
     let progressTimer = null;
+    const benchmarkMeta = {
+      hs300: {name: '沪深300', key: '沪深300权益'},
+      zz500: {name: '中证500', key: '中证500权益'},
+      csi1000: {name: '中证1000', key: '中证1000权益'},
+    };
+    const formBenchmarkSelect = document.querySelector('select[name="multi_benchmark"]');
+    const returnCurveSelect = document.getElementById('returnCurveBenchmarkSelect');
+    const returnCurveLabel = document.getElementById('returnCurveBenchmark');
+    let activeBenchmark = returnCurveSelect?.value || formBenchmarkSelect?.value || 'hs300';
+    let returnCurvePoints = [];
+    function syncBenchmarkChoice(value) {
+      activeBenchmark = benchmarkMeta[value] ? value : 'hs300';
+      if (returnCurveSelect) returnCurveSelect.value = activeBenchmark;
+      if (formBenchmarkSelect) formBenchmarkSelect.value = activeBenchmark;
+      if (returnCurveLabel) returnCurveLabel.textContent = benchmarkMeta[activeBenchmark].name;
+      drawReturnCurve();
+    }
+    returnCurveSelect?.addEventListener('change', event => syncBenchmarkChoice(event.target.value));
+    formBenchmarkSelect?.addEventListener('change', event => syncBenchmarkChoice(event.target.value));
+    function drawReturnCurve() {
+      const canvas = document.getElementById('liveReturnChart');
+      const empty = document.getElementById('returnCurveEmpty');
+      if (!canvas || !empty) return;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const width = Math.max(320, rect.width);
+      const height = Math.max(180, rect.height);
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      const benchmarkKey = benchmarkMeta[activeBenchmark].key;
+      const rows = returnCurvePoints.filter(point => Number.isFinite(Number(point?.权益)) && Number.isFinite(Number(point?.[benchmarkKey])));
+      if (!rows.length) {
+        empty.hidden = false;
+        return;
+      }
+      empty.hidden = true;
+      const strategyBase = Number(rows[0].权益);
+      const benchmarkBase = Number(rows[0][benchmarkKey]);
+      const strategy = rows.map(point => (Number(point.权益) / strategyBase - 1) * 100);
+      const benchmark = rows.map(point => (Number(point[benchmarkKey]) / benchmarkBase - 1) * 100);
+      const values = [...strategy, ...benchmark, ...strategy.map((value, index) => value - benchmark[index]), 0];
+      let min = Math.min(...values), max = Math.max(...values);
+      const padding = Math.max((max - min) * 0.1, 1);
+      min -= padding; max += padding;
+      const left = 46, right = 14, top = 18, bottom = 24;
+      const plotWidth = Math.max(1, width - left - right), plotHeight = Math.max(1, height - top - bottom);
+      const x = index => left + index * plotWidth / Math.max(1, rows.length - 1);
+      const y = value => top + (max - value) / Math.max(1e-9, max - min) * plotHeight;
+      ctx.font = '10px sans-serif';
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = '#e5ded2';
+      ctx.fillStyle = '#8791a3';
+      for (let index = 0; index < 5; index += 1) {
+        const value = max - (max - min) * index / 4;
+        const py = y(value);
+        ctx.beginPath(); ctx.moveTo(left, py); ctx.lineTo(width - right, py); ctx.stroke();
+        ctx.fillText(`${value.toFixed(1)}%`, 4, py + 3);
+      }
+      const drawLine = (valuesToDraw, color, dash = []) => {
+        ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.setLineDash(dash);
+        valuesToDraw.forEach((value, index) => index ? ctx.lineTo(x(index), y(value)) : ctx.moveTo(x(index), y(value)));
+        ctx.stroke(); ctx.setLineDash([]);
+      };
+      drawLine(strategy, '#0f766e');
+      drawLine(benchmark, '#a774e8');
+      ctx.fillStyle = '#0f766e'; ctx.fillText(`策略 ${strategy.at(-1).toFixed(2)}%`, left, 11);
+      ctx.fillStyle = '#a774e8'; ctx.fillText(`${benchmarkMeta[activeBenchmark].name} ${benchmark.at(-1).toFixed(2)}%`, left + 105, 11);
+      ctx.fillStyle = '#8791a3';
+      const firstDate = String(rows[0].日期 || '').slice(0, 10);
+      const lastDate = String(rows.at(-1).日期 || '').slice(0, 10);
+      ctx.fillText(firstDate, left, height - 7); ctx.fillText(lastDate, width - right - 66, height - 7);
+    }
+    async function pollReturnCurve() {
+      try {
+        const response = await fetch('/api/backtest-checkpoint', {cache: 'no-store'});
+        const payload = await response.json();
+        if (Array.isArray(payload['曲线'])) returnCurvePoints = payload['曲线'];
+        drawReturnCurve();
+      } catch (error) {
+        // 检查点尚未生成时保持空图提示。
+      }
+    }
     function renderProgress(state) {
       if (!progressBox || !state || state.status === 'idle') return;
       progressBox.classList.add('active');
@@ -1877,6 +1974,11 @@ def 启动后台回测(form, mode):
       }
       const stopButton = document.getElementById('stopBacktest');
       if (stopButton) stopButton.hidden = state.mode !== 'multi' || !['starting', 'running', 'stopping'].includes(state.status);
+      if (returnCurveSelect) {
+        returnCurveSelect.disabled = ['starting', 'running', 'stopping', 'finalizing'].includes(state.status);
+        const serverBenchmark = Object.entries(benchmarkMeta).find(([, meta]) => meta.name === live.基准名称)?.[0];
+        if (serverBenchmark && returnCurveSelect.disabled) syncBenchmarkChoice(serverBenchmark);
+      }
       const checkpointLink = document.getElementById('checkpointLink');
       if (checkpointLink) checkpointLink.hidden = !state.checkpoint_path;
       const actions = document.getElementById('progressActions');
@@ -1942,6 +2044,7 @@ def 启动后台回测(form, mode):
         const state = await response.json();
         renderProgress(state);
         await pollRejections();
+        await pollReturnCurve();
         if (['completed', 'stopped', 'failed'].includes(state.status)) {
           clearInterval(progressTimer);
           // 保留最终状态卡，用户可以直接打开本次报告；不自动跳转或重复提交 POST。
@@ -1952,6 +2055,8 @@ def 启动后台回测(form, mode):
     }
     renderProgress(progressInitial);
     pollRejections();
+    syncBenchmarkChoice(activeBenchmark);
+    pollReturnCurve();
     document.getElementById('stopBacktest')?.addEventListener('click', async (event) => {
       const button = event.currentTarget;
       button.disabled = true;
@@ -2265,6 +2370,7 @@ def 构建默认表单():
         "single_max_total_ratio": 1.0,
         "single_cash_floor": 0.0,
         "multi_universe": "hs300",
+        "multi_benchmark": "hs300",
         "multi_stocks": "",
         "multi_portfolio_mode": "shared_grid",
         "multi_start": "2020-01-01",
@@ -2451,6 +2557,7 @@ def 规范化表单(form_data):
         "ui_mode",
         "single_stock", "single_start", "single_end",
         "multi_universe", "multi_stocks", "multi_start", "multi_end",
+        "multi_benchmark",
         "single_rsi_price_source", "multi_rsi_price_source",
         "single_entry_timing", "multi_entry_timing",
         "single_grid_entry_timing", "multi_grid_entry_timing",
@@ -2461,6 +2568,8 @@ def 规范化表单(form_data):
         normalized[key] = str(form_data.get(key, defaults[key])).strip() or defaults[key]
     if normalized["multi_universe"] not in ("hs300", "zz500", "custom"):
         normalized["multi_universe"] = defaults["multi_universe"]
+    if normalized["multi_benchmark"] not in 指数基准配置:
+        normalized["multi_benchmark"] = defaults["multi_benchmark"]
     if normalized["ui_mode"] not in ("single", "multi"):
         normalized["ui_mode"] = "multi"
     for prefix in ("single", "multi"):
@@ -3269,6 +3378,11 @@ def 获取股票池配置(form):
     return 股票池配置.get(universe, 股票池配置["hs300"])
 
 
+def 获取基准配置(form):
+    benchmark = str(form.get("benchmark", form.get("multi_benchmark", "hs300"))).strip()
+    return 指数基准配置.get(benchmark, 指数基准配置["hs300"])
+
+
 def 格式化小数百分比(value):
     return f"{float(value) * 100:+.2f}%"
 
@@ -3374,9 +3488,10 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
         config_lines.append(f"<div><b>多股·{category}</b>（{len(selected)}项）：{'、'.join(selected) if selected else '未选择'}</div>")
     config_lines.insert(0, f"<div><b>资金模式</b>：{summary.get('资金模式', '等额独立资金池')}</div>")
     config_lines.insert(1, f"<div><b>股票池</b>：{summary.get('股票池', '沪深300')}（当前成分快照）</div>")
-    config_lines.insert(1, f"<div><b>网格加仓模式</b>：{ {'fixed_tranche': '固定分层（实验）', 'linear': '线性递增（2/3/4/5倍）', 'multiplier': '倍数加仓（2/4/8/16倍）', 'lifecycle_budget': '生命周期预算（25/15/20/20/20）'}.get(summary.get('网格加仓模式', form.get('grid_mode', 'multiplier')), '未识别') }</div>")
-    config_lines.insert(2, f"<div><b>首次开仓时机</b>：{summary.get('首次开仓时机', 买入时机名称(form.get('entry_timing', 'same_bar_entry')))}</div>")
-    config_lines.insert(3, f"<div><b>网格加仓时机</b>：{summary.get('网格加仓时机', 买入时机名称(form.get('grid_entry_timing', 'precomputed_stop_entry')))}</div>")
+    config_lines.insert(2, f"<div><b>收益对比指数</b>：{summary.get('基准指数', '沪深300')}</div>")
+    config_lines.insert(3, f"<div><b>网格加仓模式</b>：{ {'fixed_tranche': '固定分层（实验）', 'linear': '线性递增（2/3/4/5倍）', 'multiplier': '倍数加仓（2/4/8/16倍）', 'lifecycle_budget': '生命周期预算（25/15/20/20/20）'}.get(summary.get('网格加仓模式', form.get('grid_mode', 'multiplier')), '未识别') }</div>")
+    config_lines.insert(4, f"<div><b>首次开仓时机</b>：{summary.get('首次开仓时机', 买入时机名称(form.get('entry_timing', 'same_bar_entry')))}</div>")
+    config_lines.insert(5, f"<div><b>网格加仓时机</b>：{summary.get('网格加仓时机', 买入时机名称(form.get('grid_entry_timing', 'precomputed_stop_entry')))}</div>")
     audit_by_stock = {}
     legacy_stock_summary = {}
     if summary.get("资金审计"):
@@ -3464,7 +3579,7 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
 <body><section class="overview"><div class="overview-head"><h1>多股策略决策回放台</h1><div class="fund-note">回测时间：{form.get('start', '--')} 至 {form.get('end', '--')} · {summary.get('资金模式', '等额独立资金池')} · {('单股上限 '+format(float(form.get('base_position', 0)), ',.0f')+' 元，组合统一审批' if form.get('portfolio_mode') == 'shared_grid' else '每股约 '+format(float(form['capital'])/max(len(details),1), ',.0f')+' 元')} · 实际成交才显示箭头和连线</div><button class="config-button" id="returnChartToggle">组合收益</button><button class="config-button" id="capitalChartToggle">资金使用</button><button class="config-button" id="configToggle">策略配置</button></div><div class="metric-grid"><div class="metric"><span>组合初始资金</span><b>{float(summary.get('组合初始资金', form['capital'])):,.0f}</b></div><div class="metric"><span>组合最终权益</span><b>{float(summary.get('组合最终权益', form['capital'])):,.0f}</b></div><div class="metric"><span>组合收益</span><b class="good">{float(summary.get('组合总收益率', 0))*100:+.2f}%</b></div><div class="metric"><span>组合最大回撤</span><b>{float(summary.get('组合最大回撤', 0))*100:.2f}%</b></div><div class="metric"><span>最大使用资金</span><b>{float(summary.get('最大使用资金', 0)):,.0f}</b></div><div class="metric"><span>最小非零使用资金</span><b>{float(summary.get('最小使用资金', 0)):,.0f}</b></div></div><div class="config-summary">{''.join(config_lines)}</div></section>
 <main class="main"><section class="panel stock-panel"><div class="stock-tools"><input id="stockSearch" placeholder="搜索股票代码"><button data-sort="trades">成交优先</button><button data-sort="return">贡献排序</button></div><div class="table-wrap"><table id="stockTable"><thead><tr>{'<th>股票</th><th>组合贡献</th><th>实际买/卖</th><th>期末股数</th><th>组合拦截</th><th>策略收益</th>' if summary.get('资金模式') == '共享账户' else '<th>股票</th><th>收益</th><th>回撤</th><th>买/卖</th><th>期末权益</th>'}</tr></thead><tbody>{''.join(rows)}</tbody></table></div></section><div class="splitter" id="mainSplitter" title="拖动调整股票列表宽度"></div><section class="panel viewer"><iframe name="stock_view" src="{first_stock_url}" title="股票策略决策回放"></iframe></section></main>
 <div class="config-pop" id="configPop"><div class="config-body"><strong>本次多股策略配置</strong>{''.join(config_lines)}</div></div>
-<div class="chart-pop" id="returnChartPop"><div class="chart-dialog"><div class="chart-dialog-head"><span>组合累计收益 vs {summary.get('股票池', '沪深300')}</span><button class="config-button" data-close-chart>关闭</button></div><div class="chart-card"><div class="legend"><span><i style="background:#7184ff"></i>组合</span><span><i style="background:#a774e8"></i>{summary.get('股票池', '沪深300')}</span><span><i style="background:#39d6bd"></i>超额</span></div><canvas id="returnChart"></canvas></div></div></div>
+<div class="chart-pop" id="returnChartPop"><div class="chart-dialog"><div class="chart-dialog-head"><span>组合累计收益 vs {summary.get('基准指数', '沪深300')}</span><button class="config-button" data-close-chart>关闭</button></div><div class="chart-card"><div class="legend"><span><i style="background:#7184ff"></i>组合</span><span><i style="background:#a774e8"></i>{summary.get('基准指数', '沪深300')}</span><span><i style="background:#39d6bd"></i>超额</span></div><canvas id="returnChart"></canvas></div></div></div>
 <div class="chart-pop" id="capitalChartPop"><div class="chart-dialog"><div class="chart-dialog-head"><span>资金使用与可用现金</span><button class="config-button" data-close-chart>关闭</button></div><div class="chart-card"><div class="legend"><span><i style="background:#f4bd50"></i>持仓市值</span><span><i style="background:#39d6bd"></i>现金</span><span><i style="background:#7184ff"></i>使用率</span></div><canvas id="capitalChart"></canvas></div></div></div>
 <script>const curve={json.dumps(equity_curve, ensure_ascii=False)};const initial={float(summary.get('组合初始资金', form['capital']))};const money=v=>new Intl.NumberFormat('zh-CN',{{maximumFractionDigits:0}}).format(v);function setupCanvas(id){{const canvas=document.getElementById(id),rect=canvas.getBoundingClientRect(),dpr=window.devicePixelRatio||1;canvas.width=Math.max(1,rect.width*dpr);canvas.height=Math.max(1,rect.height*dpr);const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);return{{canvas,ctx,w:rect.width,h:rect.height}}}}function line(ctx,values,x,y,color,width=2,dash=[]){{ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=width;ctx.setLineDash(dash);values.forEach((v,i)=>{{if(v==null)return;const px=x(i),py=y(v);i?ctx.lineTo(px,py):ctx.moveTo(px,py)}});ctx.stroke();ctx.setLineDash([])}}function grid(ctx,w,h,min,max,format){{ctx.font='10px sans-serif';ctx.fillStyle='#7f8ba0';ctx.strokeStyle='#263248';ctx.lineWidth=1;for(let i=0;i<5;i++){{const y=15+i*(h-32)/4,value=max-(max-min)*i/4;ctx.beginPath();ctx.moveTo(48,y);ctx.lineTo(w-8,y);ctx.stroke();ctx.fillText(format(value),4,y+3)}}}}function drawReturns(){{const{{ctx,w,h}}=setupCanvas('returnChart');if(!curve.length)return;const strategy=curve.map(p=>(p.权益/initial-1)*100),hs=curve.map(p=>p['沪深300权益']?(p['沪深300权益']/initial-1)*100:null),alpha=strategy.map((v,i)=>hs[i]==null?null:v-hs[i]);const vals=[...strategy,...hs,...alpha].filter(Number.isFinite),min=Math.min(...vals,0),max=Math.max(...vals,0),span=max-min||1,x=i=>48+i*(w-58)/Math.max(1,curve.length-1),y=v=>15+(max-v)/span*(h-32);grid(ctx,w,h,min,max,v=>v.toFixed(1)+'%');line(ctx,strategy,x,y,'#7184ff',2.4);line(ctx,hs,x,y,'#a774e8',1.8);line(ctx,alpha,x,y,'#39d6bd',1.4,[5,3]);ctx.fillStyle='#7184ff';ctx.fillText('组合 '+strategy.at(-1).toFixed(2)+'%',52,12);if(hs.at(-1)!=null){{ctx.fillStyle='#a774e8';ctx.fillText('沪深300 '+hs.at(-1).toFixed(2)+'%',145,12);ctx.fillStyle='#39d6bd';ctx.fillText('超额 '+alpha.at(-1).toFixed(2)+'%',260,12)}}}}function drawCapital(){{const{{ctx,w,h}}=setupCanvas('capitalChart');if(!curve.length)return;const cash=curve.map(p=>p.现金),used=curve.map(p=>p['持仓市值']),rate=curve.map(p=>p['资金使用率']*100),max=Math.max(initial,...cash,...used),x=i=>48+i*(w-58)/Math.max(1,curve.length-1),y=v=>15+(max-v)/max*(h-32),yr=v=>15+(100-v)/100*(h-32);grid(ctx,w,h,0,max,v=>money(v/10000)+'万');line(ctx,used,x,y,'#f4bd50',2);line(ctx,cash,x,y,'#39d6bd',1.8);line(ctx,rate,x,yr,'#7184ff',1.4,[4,3]);ctx.fillStyle='#7184ff';ctx.fillText('当前使用率 '+rate.at(-1).toFixed(1)+'%',w-125,12)}}function draw(){{drawReturns();drawCapital()}}window.addEventListener('resize',draw);new ResizeObserver(draw).observe(document.querySelector('.analysis'));draw();document.getElementById('analysisToggle').onclick=e=>{{document.body.classList.toggle('analysis-collapsed');e.target.textContent=document.body.classList.contains('analysis-collapsed')?'展开图表':'收起图表';setTimeout(draw,50)}};const pop=document.getElementById('configPop');document.getElementById('configToggle').onclick=()=>pop.classList.add('open');pop.onclick=e=>{{if(e.target===pop)pop.classList.remove('open')}};document.getElementById('stockSearch').oninput=e=>{{const q=e.target.value.trim();document.querySelectorAll('#stockTable tbody tr').forEach(row=>row.hidden=!row.dataset.stock?.includes(q))}};document.querySelectorAll('[data-sort]').forEach(button=>button.onclick=()=>{{const key=button.dataset.sort,tbody=document.querySelector('#stockTable tbody'),rows=[...tbody.rows];rows.sort((a,b)=>Number(b.dataset[key]||0)-Number(a.dataset[key]||0));rows.forEach(row=>tbody.appendChild(row))}});document.querySelectorAll('#stockTable a').forEach(link=>link.onclick=()=>{{document.querySelectorAll('#stockTable tr').forEach(row=>row.style.background='');link.closest('tr').style.background='#202d47'}});const splitter=document.getElementById('mainSplitter');let resizing=false;splitter.onpointerdown=e=>{{resizing=true;splitter.setPointerCapture(e.pointerId)}};splitter.onpointermove=e=>{{if(!resizing)return;const left=document.querySelector('.main').getBoundingClientRect().left,width=Math.max(270,Math.min(620,e.clientX-left));document.documentElement.style.setProperty('--stock-width',width+'px')}};splitter.onpointerup=()=>resizing=false;</script></body></html>'''
     # 图表按需弹出，不再占据多股回放的默认高度；曲线数据与计算保持不变。
@@ -3491,10 +3606,10 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
         "window.addEventListener('resize',draw);new ResizeObserver(draw).observe(document.querySelector('.analysis'));draw();document.getElementById('analysisToggle').onclick=e=>{document.body.classList.toggle('analysis-collapsed');e.target.textContent=document.body.classList.contains('analysis-collapsed')?'展开图表':'收起图表';setTimeout(draw,50)};const pop=",
         "window.addEventListener('resize',draw);draw();function openChart(id){const chart=document.getElementById(id);chart.classList.add('open');requestAnimationFrame(draw)};document.getElementById('returnChartToggle').onclick=()=>openChart('returnChartPop');document.getElementById('capitalChartToggle').onclick=()=>openChart('capitalChartPop');document.querySelectorAll('[data-close-chart]').forEach(button=>button.onclick=()=>button.closest('.chart-pop').classList.remove('open'));document.querySelectorAll('.chart-pop').forEach(chart=>chart.onclick=event=>{if(event.target===chart)chart.classList.remove('open')});const pop=",
     )
-    benchmark_key = 股票池配置.get(form.get("universe", "hs300"), 股票池配置["hs300"])["curve_key"]
+    benchmark_key = 获取基准配置(form)["curve_key"]
     page = page.replace("const money=", f"const benchmarkKey={json.dumps(benchmark_key, ensure_ascii=False)};const money=", 1)
     page = page.replace("p['沪深300权益']", "p[benchmarkKey]")
-    page = page.replace("'沪深300 '+hs", f"'{summary.get('股票池', '沪深300')} '+hs")
+    page = page.replace("'沪深300 '+hs", f"'{summary.get('基准指数', '沪深300')} '+hs")
     with open(path, "w", encoding="utf-8") as target:
         target.write(page)
 
@@ -3502,7 +3617,8 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
 def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_callback=None):
     form = 提取模式配置(form, "multi")
     form["universe"] = form.get("multi_universe", "hs300")
-    benchmark_config = 获取股票池配置(form)
+    stock_pool_config = 获取股票池配置(form)
+    benchmark_config = 获取基准配置(form)
     stocks = 解析多股输入(form)
     if progress:
         progress(phase="准备多股回测", completed=0, total=len(stocks), unit="股票", trades=0, message=f"共 {len(stocks)} 只股票")
@@ -3693,7 +3809,8 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
     非零使用资金 = [value for value in 使用资金列表 if value > 0]
     summary.update({
         "资金模式": "共享账户" if form.get("portfolio_mode") == "shared_grid" else "等额独立资金池",
-        "股票池": benchmark_config["name"],
+        "股票池": stock_pool_config["name"] if form.get("universe") != "custom" else "自定义股票池",
+        "基准指数": benchmark_config["name"],
         "网格加仓模式": form.get("grid_mode", "multiplier"),
         "首次开仓时机": 买入时机名称(form.get("entry_timing", "same_bar_entry")),
         "网格加仓时机": 买入时机名称(form.get("grid_entry_timing", "precomputed_stop_entry")),
@@ -3737,7 +3854,8 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
             "汇总": summary,
             "股票明细": details,
             "组合权益曲线": 组合曲线,
-            "股票池": benchmark_config["name"],
+            "股票池": summary["股票池"],
+            "基准指数": benchmark_config["name"],
         }, ensure_ascii=False, indent=2))
     multi_token = uuid.uuid4().hex
     multi_report_path = os.path.join(run_dir, "多股策略决策回放.html")
@@ -3977,9 +4095,9 @@ def 首页():
             with open(result_path, encoding="utf-8") as source:
                 payload = json.load(source)
             summary = payload.get("汇总", {})
-            benchmark_config = 股票池配置.get(
-                "zz500" if payload.get("股票池") == "中证500" else "hs300",
-                股票池配置["hs300"],
+            benchmark_config = next(
+                (item for item in 指数基准配置.values() if item["name"] == payload.get("基准指数")),
+                指数基准配置["hs300"],
             )
             result["status"] = "多股回测完成"
             result["report_url"] = f"/multi-report/{最近多股报告['token']}"
