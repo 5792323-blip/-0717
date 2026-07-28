@@ -17,6 +17,10 @@ from 策略引擎.交易账户 import 交易账户
 from 策略引擎.规则执行器 import 规则执行器
 
 
+def _断管错误(error):
+    return isinstance(error, BrokenPipeError) or getattr(error, "errno", None) == 32 or "Broken pipe" in str(error)
+
+
 def _时间键(index, row):
     value = row.get("完整时间", index)
     timestamp = pd.to_datetime(value, errors="coerce")
@@ -126,7 +130,7 @@ def _提取拒绝订单明细(审批记录):
 def 运行共享账户回测(
     stocks, start, end, capital, config_dir, liquidity_limit=0.01,
     allow_partial_fill=True, progress_callback=None, stop_requested=None,
-    checkpoint_callback=None, benchmark_config=None,
+    checkpoint_callback=None, benchmark_config=None, historical_constituents=None,
 ):
     """在一个共享账户中直接运行多只股票，不产生候选成交。"""
     started = perf_counter()
@@ -228,6 +232,10 @@ def 运行共享账户回测(
             )
         entries.sort(key=lambda item: _会话优先级(item[0]), reverse=True)
         for session, 股票位置, row in entries:
+            if historical_constituents is not None:
+                session["运行参数"]["禁止新开仓"] = not historical_constituents.包含(
+                    session["股票代码"], timestamp.strftime("%Y-%m-%d")
+                )
             row_data = row.to_dict()
             row_data["_上一根RSI"] = session["上一根RSI"]
             row_data["_上一根最低价RSI"] = session["上一根最低价RSI"]
@@ -308,20 +316,29 @@ def 运行共享账户回测(
             "持仓数量": int(point.get("持仓数量", 0) or 0),
         }
         curve[-1].update({benchmark_key: round(hs_value / hs_first * capital, 2) if hs_first and hs_value else None})
-        if progress_callback and (时间轴索引 == 1 or 时间轴索引 == len(timestamps) or 时间轴索引 % max(1, len(timestamps) // 100) == 0):
-            progress_callback(
-                phase="共享账户时间轴回测", completed=时间轴索引, total=len(timestamps),
-                unit="时间点", trades=actual_buys + actual_sells, message=f"处理到 {point['日期']}",
-                approvals=len(account.审批记录), live={**live, "已处理时间点": 时间轴索引, "时间点总数": len(timestamps)},
-                拒绝订单明细=_提取拒绝订单明细(account.审批记录),
-                curve_point={**curve[-1], **live},
-            )
-        if checkpoint_callback and (时间轴索引 == 1 or 时间轴索引 == len(timestamps) or 时间轴索引 % max(1, len(timestamps) // 100) == 0):
-            checkpoint_callback(
-                completed=时间轴索引, total=len(timestamps), phase="共享账户时间轴回测",
-                live={**live, "已处理时间点": 时间轴索引, "时间点总数": len(timestamps)},
-                curve_point={**curve[-1], **live},
-            )
+        try:
+            if progress_callback and (时间轴索引 == 1 or 时间轴索引 == len(timestamps) or 时间轴索引 % max(1, len(timestamps) // 100) == 0):
+                progress_callback(
+                    phase="共享账户时间轴回测", completed=时间轴索引, total=len(timestamps),
+                    unit="时间点", trades=actual_buys + actual_sells, message=f"处理到 {point['日期']}",
+                    approvals=len(account.审批记录), live={**live, "已处理时间点": 时间轴索引, "时间点总数": len(timestamps)},
+                    拒绝订单明细=_提取拒绝订单明细(account.审批记录),
+                    curve_point={**curve[-1], **live},
+                )
+            if checkpoint_callback and (时间轴索引 == 1 or 时间轴索引 == len(timestamps) or 时间轴索引 % max(1, len(timestamps) // 100) == 0):
+                checkpoint_callback(
+                    completed=时间轴索引, total=len(timestamps), phase="共享账户时间轴回测",
+                    live={**live, "已处理时间点": 时间轴索引, "时间点总数": len(timestamps)},
+                    curve_point={**curve[-1], **live},
+                )
+        except BrokenPipeError:
+            stopped = True
+            break
+        except Exception as error:
+            if _断管错误(error):
+                stopped = True
+                break
+            raise
 
     # 停止请求可能恰好发生在最后一个时间点处理完成之后；循环没有
     # 下一轮时不会再次命中开头的检查，因此这里补一次最终检查。
