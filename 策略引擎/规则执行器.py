@@ -1425,7 +1425,7 @@ class 规则执行器:
         当前估值价 = 不复权开盘
         结构性可用金额, 账户限制 = self._计算账户结构性可用金额(当前估值价)
         流动性金额上限 = None
-        if self.流动性上限比例 is not None:
+        if getattr(self, '流动性上限比例', None) is not None:
             try:
                 流动性比例 = float(self.流动性上限比例)
             except (TypeError, ValueError):

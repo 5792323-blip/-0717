@@ -2021,7 +2021,7 @@ def 启动后台回测(form, mode):
       ].join('');
       const rejectionSummary = document.getElementById('rejectionSummary');
       if (rejectionSummary) {
-        const reasons = Object.entries(live.拒绝原因汇总 || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
+        const reasons = Object.entries(live.拒绝分类汇总 || live.拒绝原因汇总 || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
         rejectionSummary.innerHTML = reasons.length
           ? `<strong>拒绝订单汇总：</strong> ${reasons.map(([reason, count]) => `${reason} ${Number(count).toLocaleString('zh-CN')} 笔`).join(' · ')}`
           : '<strong>拒绝订单汇总：</strong> 暂无拒绝记录';
@@ -3866,6 +3866,7 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
             "组合权益曲线": shared_run["组合权益曲线"],
             "资金审计": dict(account.审批统计),
             "拒绝原因汇总": dict((shared_run.get("live") or {}).get("拒绝原因汇总", {})),
+            "拒绝分类汇总": dict((shared_run.get("live") or {}).get("拒绝分类汇总", {})),
             "当前现金": account.现金,
             "当前持仓数量": len(account.持仓),
             "组合成交明细": audit_rows,
@@ -3907,6 +3908,7 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
         summary.update({
             "资金审计": portfolio.get("资金审计", {}),
             "拒绝原因汇总": portfolio.get("拒绝原因汇总", {}),
+            "拒绝分类汇总": portfolio.get("拒绝分类汇总", {}),
             "当前现金": portfolio.get("当前现金", 0.0),
             "当前持仓数量": portfolio.get("当前持仓数量", 0),
             "组合成交明细": portfolio.get("组合成交明细", []),

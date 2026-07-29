@@ -581,7 +581,7 @@ def test_sell_rule_uses_previous_completed_close():
     assert "0.0" not in reason
 
 
-def test_new_strict_sentinel_is_checked_on_the_forming_bar():
+def test_new_sentinel_is_not_rechecked_after_same_bar_precheck():
     executor = 规则执行器("1_策略配置")
     checks = []
 
@@ -598,4 +598,4 @@ def test_new_strict_sentinel_is_checked_on_the_forming_bar():
 
     executor.每根K线处理(make_bar(), 20)
 
-    assert len(checks) == 2
+    assert len(checks) == 1

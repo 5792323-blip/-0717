@@ -187,6 +187,7 @@ def 运行共享账户回测(
     timestamps = sorted(timeline)
     actual_buys = actual_sells = rejected_orders = partial_fills = 0
     rejection_reasons = Counter()
+    rejection_categories = Counter()
     realized_wins = realized_losses = 0
     total_fees = 0.0
     approval_cursor = 0
@@ -277,7 +278,8 @@ def 运行共享账户回测(
                         pass
             else:
                 rejected_orders += 1
-                rejection_reasons[str(row.get("拒绝分类") or row.get("原因") or result or "未说明原因")] += 1
+                rejection_reasons[str(row.get("原因") or result or "未说明原因")] += 1
+                rejection_categories[str(row.get("拒绝分类") or row.get("原因") or result or "未说明原因")] += 1
             if str(row.get("审批状态", "")) == "部分成交":
                 partial_fills += 1
             try:
@@ -308,6 +310,7 @@ def 运行共享账户回测(
             "审批请求": len(account.审批记录),
             "拒绝订单": rejected_orders,
             "拒绝原因汇总": dict(rejection_reasons),
+            "拒绝分类汇总": dict(rejection_categories),
             "部分成交": partial_fills,
             "已实现盈利": realized_wins,
             "已实现亏损": realized_losses,
@@ -367,6 +370,7 @@ def 运行共享账户回测(
         "审批请求": len(account.审批记录),
         "拒绝订单": rejected_orders,
         "拒绝原因汇总": dict(rejection_reasons),
+        "拒绝分类汇总": dict(rejection_categories),
         "部分成交": partial_fills,
         "已平仓胜率": realized_wins / max(realized_wins + realized_losses, 1) * 100,
         "累计费用": round(total_fees, 2),
