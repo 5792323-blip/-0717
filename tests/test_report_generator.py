@@ -40,7 +40,9 @@ def test_kline_replay_generates_pan_zoom_workbench(tmp_path):
         "交易明细": trades,
         "持仓过程": pd.DataFrame([
             {"K线索引": 3, "哨兵价": None, "本根触发哨兵价": None,
-             "持仓数量": 0, "最终动作": "不交易", "动作原因": "尚未形成哨兵价"},
+             "持仓数量": 0, "最终动作": "不交易", "动作原因": "尚未形成哨兵价",
+             "本根反推价": 77.0, "本根反推信号类型": "真实信号",
+             "本根反推目标RSI": 30.0},
         ]),
         "初始资金": 100000,
         "最终现金": 102000,
@@ -71,6 +73,8 @@ def test_kline_replay_generates_pan_zoom_workbench(tmp_path):
     assert "首次开仓的 RSI 信号归类" in page
     assert "const RSI_SIGNALS=['RSI上穿20','RSI上穿30','RSI上穿均线','RSI上穿70']" in page
     assert '"哨兵价": null' in page
+    assert '"反推价": 77.0' in page
+    assert '"反推信号": "真实信号"' in page
     assert "allBarsMode" not in page
     assert "%%K线JSON%%" not in page
     assert "2024-01-03" in page
