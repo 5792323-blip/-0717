@@ -150,7 +150,64 @@ class 规则执行器:
         if not getattr(self, '运行参数', {}).get('共享账户模式', False):
             return
         if hasattr(self, '账户视图'):
+            if row.get('结果') == '组合层拦截':
+                row.setdefault('拒绝分类', self._拒绝分类(row))
+                row.setdefault('详细原因', self._拒绝详细原因(row))
             self.账户视图.记录审批(**row)
+
+    @staticmethod
+    def _拒绝分类(row):
+        text = str(row.get('原因', '') or '')
+        limits = row.get('账户限制') or {}
+        minimum = row.get('最低一手含费用')
+        def numeric(value, default=float('inf')):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+        if text == '资金不足一手' and isinstance(minimum, (int, float)):
+            if numeric(row.get('当前现金'), 0.0) < minimum:
+                return '现金余额不足'
+            if numeric(limits.get('买入流动性上限')) < minimum:
+                return '买入流动性限制'
+            if numeric(row.get('买入金额上限')) < minimum:
+                return '策略或单只仓位上限'
+            if numeric(limits.get('总仓位剩余')) < minimum:
+                return '组合总仓位上限'
+            return '最低交易单位限制'
+        if '最大持仓' in text:
+            return '最大持仓数量限制'
+        if '流动性' in text or '成交额' in text:
+            return '买入流动性限制'
+        if '部分成交' in text:
+            return '禁止部分成交设置'
+        if '现金' in text:
+            return '现金或现金保留限制'
+        if '仓位' in text or '一手' in text:
+            return '账户结构额度限制'
+        return '交易条件限制'
+
+    @staticmethod
+    def _拒绝详细原因(row):
+        limits = row.get('账户限制') or {}
+        parts = []
+        for label, key in (
+            ('现金可用', '现金可用金额'), ('单只剩余', '单只结构性上限'),
+            ('总仓位剩余', '总仓位剩余'), ('流动性上限', '买入流动性上限'),
+        ):
+            value = limits.get(key)
+            if isinstance(value, (int, float)):
+                parts.append(f'{label}{value:,.2f}元')
+        minimum = row.get('最低一手含费用')
+        if isinstance(minimum, (int, float)):
+            parts.insert(0, f'最低一手含费用{minimum:,.2f}元')
+        upper = row.get('买入金额上限')
+        if isinstance(upper, (int, float)):
+            parts.append(f'本次买入上限{upper:,.2f}元')
+        cash = row.get('当前现金')
+        if isinstance(cash, (int, float)):
+            parts.append(f'当前现金{cash:,.2f}元')
+        return f"{row.get('原因', '未说明')}；" + '，'.join(parts) if parts else str(row.get('原因', '未说明'))
 
     def __init__(self, 配置目录, 运行参数=None, 账户=None, 股票代码="600519"):
         """
@@ -748,16 +805,20 @@ class 规则执行器:
         # 跟踪上移：旧哨兵价只允许向上移动；若没有形成新的哨兵价，则不能回退。
         self._更新哨兵价跟踪(K线数据)
 
-        # 收盘后形成哨兵价；严格模式随后立即用本根最高价检查，未成交时
-        # 该哨兵价继续保留给后续K线。
-        self._计算哨兵价(K线数据, 当前索引)
-        # 严格预挂模式下，本根收盘形成的哨兵价立即按本根最高价检查。
-        # 这里使用的是本根已经完成的K线，不读取下一根数据。
-        if (self.哨兵价本根新形成
-                and self._核心模块启用('本根形成立即成交', False)
-                and not 待买入已成交):
-            self._本根触发哨兵价 = self.哨兵价当前
-            self._检查买入(K线数据, 当前索引)
+        # same_bar_entry 的“本根形成”指本根开始前根据上一根完整数据
+        # 预计算并挂出的哨兵价；不能在本根收盘后再用本根 RSI 形成第二个
+        # 哨兵价并回看本根最高价成交。
+        if self.买入时机模式 != SAME_BAR_ENTRY:
+            # 收盘后形成哨兵价；严格模式随后立即用本根最高价检查，未成交时
+            # 该哨兵价继续保留给后续K线。
+            self._计算哨兵价(K线数据, 当前索引)
+            # 严格预挂模式下，本根收盘形成的哨兵价立即按本根最高价检查。
+            # 这里使用的是本根已经完成的K线，不读取下一根数据。
+            if (self.哨兵价本根新形成
+                    and self._核心模块启用('本根形成立即成交', False)
+                    and not 待买入已成交):
+                self._本根触发哨兵价 = self.哨兵价当前
+                self._检查买入(K线数据, 当前索引)
         
         # 检查卖出信号
         # ★ 修复: 预取快照，避免dict突变
@@ -1327,7 +1388,8 @@ class 规则执行器:
             买入基准前复权 = 成交结果['基准价']
             前复权成交价 = 成交结果['成交价']
         买入基准不复权 = 前复权成交价 * (不复权开盘 / 前复权开盘) if 前复权开盘 > 0 else 不复权开盘
-        买入价 = 买入基准不复权
+        # 复权触发价可以保留高精度，但实际不复权成交价必须符合股票报价步长。
+        买入价 = round(float(买入基准不复权), 2)
         
         # 买入金额受仓位基础金额和信号自身上限共同限制。
         股票代码 = str(K线数据.get('股票代码', '600519')).strip().upper()
@@ -1358,8 +1420,27 @@ class 规则执行器:
             目标金额 *= 信号资金系数
         当前估值价 = 不复权开盘
         结构性可用金额, 账户限制 = self._计算账户结构性可用金额(当前估值价)
-        # 暂时屏蔽成交额流动性限制。页面仍保留该参数，便于后续恢复；
-        # 当前买入数量只受现金、仓位结构、价格和股数取整约束。
+        流动性金额上限 = None
+        if self.流动性上限比例 is not None:
+            try:
+                流动性比例 = float(self.流动性上限比例)
+            except (TypeError, ValueError):
+                流动性比例 = 0.0
+            if 流动性比例 > 0:
+                try:
+                    上一交易日成交额 = float(K线数据.get('_上一交易日成交额'))
+                except (TypeError, ValueError):
+                    上一交易日成交额 = 0.0
+                流动性金额上限 = max(0.0, 上一交易日成交额 * 流动性比例)
+                if 流动性金额上限 <= 0:
+                    self.本根决策["动作原因"] = "缺少上一交易日成交额，无法通过买入流动性检查"
+                    self._记录账户审批(
+                        类型="买入", 结果="组合层拦截", 原因="缺少上一交易日成交额",
+                        请求股数=0, 成交股数=0, 成交价=买入价,
+                        时间=str(getattr(K线数据, 'name', K线数据.get('完整时间', K线数据.get('日期', '')))),
+                    )
+                    return False
+                账户限制['买入流动性上限'] = 流动性金额上限
         if getattr(self, '单股全仓模式', False):
             结构性可用金额 = max(0.0, self.当前现金)
             网格启用 = bool(
@@ -1382,6 +1463,8 @@ class 规则执行器:
             买入金额上限 = 结构性可用金额
         else:
             买入金额上限 = min(max(10000, 目标金额), 结构性可用金额)
+        if 流动性金额上限 is not None:
+            买入金额上限 = min(买入金额上限, 流动性金额上限)
         if 指定股数 is not None:
             请求股数 = max(
                 最低交易单位,
@@ -1437,6 +1520,8 @@ class 规则执行器:
             # 网格的目标股数仍由统一网格状态机决定，但共享账户的现金、
             # 单股和总仓位限制必须同样生效，不能出现组合现金为负。
             买入金额上限 = 结构性可用金额
+            if 流动性金额上限 is not None:
+                买入金额上限 = min(买入金额上限, 流动性金额上限)
             预估现金上限 = min(self.当前现金, 结构性可用金额)
         else:
             预估现金上限 = self.当前现金 if getattr(self, '单股全仓模式', False) else 结构性可用金额
@@ -1452,7 +1537,8 @@ class 规则执行器:
                 break
             股数 -= 最低交易单位
 
-        if 股数 < 最低交易单位 and 结构性可用金额 >= 一手金额:
+        if (股数 < 最低交易单位 and 结构性可用金额 >= 一手金额
+                and (流动性金额上限 is None or 流动性金额上限 >= 一手金额)):
             股数 = 最低交易单位
             实际金额 = 股数 * 买入价
             买入佣金 = max(实际金额 * self.佣金率, 5)
@@ -1466,6 +1552,10 @@ class 规则执行器:
                 类型="买入", 结果="组合层拦截", 原因="资金不足一手",
                 请求股数=请求股数, 成交股数=0, 成交价=买入价,
                 账户限制=账户限制,
+                最低交易单位=最低交易单位,
+                最低一手含费用=round(float(一手金额 + max(一手金额 * self.佣金率, 5) + 一手金额 * self.过户费率), 2),
+                买入金额上限=round(float(买入金额上限), 2),
+                当前现金=round(float(self.当前现金), 2),
                 时间=str(getattr(K线数据, 'name', K线数据.get('完整时间', K线数据.get('日期', '')))),
             )
             return False
@@ -1474,9 +1564,25 @@ class 规则执行器:
             self.本根决策["动作原因"] = (
                 f"最低一手总成本{实际金额总:.2f}元超过仓位或现金可用额"
             )
+            self._记录账户审批(
+                类型="买入", 结果="组合层拦截", 原因="最低一手总成本超过账户可用额",
+                请求股数=请求股数, 成交股数=0, 成交价=买入价,
+                账户限制=账户限制, 最低一手含费用=round(float(实际金额总), 2),
+                买入金额上限=round(float(买入金额上限), 2),
+                当前现金=round(float(self.当前现金), 2),
+                时间=str(getattr(K线数据, 'name', K线数据.get('完整时间', K线数据.get('日期', '')))),
+            )
             return False
         if not 网格加仓 and self.当前现金 < 实际金额总:
             self.本根决策["动作原因"] = f"现金不足，买入总支出{实际金额总:.2f}"
+            self._记录账户审批(
+                类型="买入", 结果="组合层拦截", 原因="现金余额不足",
+                请求股数=请求股数, 成交股数=0, 成交价=买入价,
+                账户限制=账户限制, 最低一手含费用=round(float(实际金额总), 2),
+                买入金额上限=round(float(买入金额上限), 2),
+                当前现金=round(float(self.当前现金), 2),
+                时间=str(getattr(K线数据, 'name', K线数据.get('完整时间', K线数据.get('日期', '')))),
+            )
             return False
         if 实际金额 > 买入金额上限:
             self.本根决策["动作原因"] = (
@@ -2001,8 +2107,8 @@ class 规则执行器:
             })
             return
 
-        # 网格触发先累计为待确认状态；只有后续K线重新形成哨兵价并通过
-        # 买入因子后，才允许把待加仓数量成交。
+        # 网格触发先累计为待确认状态；严格预挂模式下，后续K线突破已有
+        # 哨兵价才允许成交，不要求重新出现 RSI 信号。
         本根新信号 = getattr(self, '本根反推信号类型', None)
         本根有新信号 = bool(getattr(self, '哨兵价本根新形成', False) and 本根新信号)
         待加仓股数 = int(持仓.get('网格_待加仓股数', 0) or 0)
@@ -2018,6 +2124,13 @@ class 规则执行器:
             and 待单形成索引 is not None
             and 待单形成索引 < 当前索引
         )
+        严格网格 = self.网格加仓时机模式 == STRICT_PRECOMPUTED
+        网格哨兵突破 = False
+        if 严格网格 and 已有待确认网格 and self.哨兵价当前 is not None:
+            try:
+                网格哨兵突破 = float(K线数据.get('前复权_最高', 0)) >= float(self.哨兵价当前)
+            except (TypeError, ValueError):
+                网格哨兵突破 = False
 
         # 加仓也要满足“买入侧防护”：过滤因子 + 扩展因子买入前检查
         信号类型 = 本根新信号 if 本根有新信号 else (持仓.get('信号类型') or '')
@@ -2061,12 +2174,14 @@ class 规则执行器:
                     return
             except Exception:
                 pass
+        # 网格回撤本身就是触发条件，不应等待新的 RSI 信号才检查。
+        # 严格模式的成交确认在后面单独要求“先有待单、后有哨兵突破”。
+        if not 触发列表:
             触发列表 = self.因子管理器.加仓前检查(持仓, K线数据, self.全局状态)
-        # 本根同时达到回撤档位并形成新哨兵价时，允许当根完成确认成交；
-        # 只有没有新哨兵价时，网格回撤才保留为待确认状态。
-        # 已有待加仓单时，只要本根重新出现有效买入信号，即使没有新的网格
-        # 回撤档位，也要把历史待加仓数量一次性成交。
-        if (not 触发列表 and 已有待确认网格 and 本根有新信号 and
+        # 已有待加仓单时，严格模式只要本根突破预挂哨兵价即可执行，
+        # 不再要求重新出现 RSI 信号。首次在本根同时回撤和突破时，
+        # 因 OHLC 无法判断盘中先后，只保留待单，下一根再确认。
+        if (严格网格 and not 触发列表 and 已有待确认网格 and 网格哨兵突破 and
                 (int(持仓.get('网格_待加仓股数', 0) or 0) > 0
                  or float(持仓.get('网格_待加仓金额', 0.0) or 0.0) > 0)):
             触发列表 = [{
@@ -2077,6 +2192,7 @@ class 规则执行器:
                 '网格层级': max(list(持仓.get('网格_待加仓层级', []) or [1])),
                 '因子': 'grid_addon',
                 '_仅执行待单': True,
+                '_预挂哨兵突破': True,
             }]
         if not 触发列表:
             if (持仓.get('网格_待加仓股数', 0)
@@ -2132,10 +2248,14 @@ class 规则执行器:
                 if 持仓.get('网格_待单形成索引') is None:
                     持仓['网格_待单形成索引'] = 当前索引
             下一根开盘执行 = False
-            if not 本根有新信号:
+            允许本根执行 = bool(
+                本根有新信号
+                or (严格网格 and 已有待确认网格 and 网格哨兵突破)
+            )
+            if not 允许本根执行:
                 self.本根决策.setdefault('决策记录', {}).setdefault('买入', {}).update({
                     '加仓检查': '待成交',
-                    '加仓拦截原因': '网格已触发，等待新的哨兵价和买入因子确认',
+                    '加仓拦截原因': '网格回撤已触发，等待回撤后的哨兵价突破',
                     '待加仓层级': ' + '.join(f'L{x}' for x in 持仓['网格_待加仓层级']),
                     '待加仓股数': 持仓['网格_待加仓股数'],
                 })
@@ -2143,18 +2263,17 @@ class 规则执行器:
 
             # 最终成交前再次校验，防止任何待单/因子路径绕过“本根新哨兵”条件。
             # 网格回撤只能产生待确认数量，不能单独调用成交模型。
-            if not getattr(self, '哨兵价本根新形成', False):
+            if (严格网格 and not 网格哨兵突破) or (
+                    not 严格网格 and not getattr(self, '哨兵价本根新形成', False)):
                 self.本根决策.setdefault('决策记录', {}).setdefault('买入', {}).update({
                     '加仓检查': '待成交',
-                    '加仓拦截原因': '网格回撤已满足，但本根未形成新哨兵价',
+                    '加仓拦截原因': '网格回撤已满足，但本根未突破有效哨兵价',
                 })
                 continue
 
-            新规则 = (
-                self._获取买入规则(本根新信号)
-                if 本根有新信号 else
-                (self.买入规则列表[0] if self.买入规则列表 else {})
-            )
+            新规则 = self._获取买入规则(
+                本根新信号 or 持仓.get('信号类型')
+            ) or (self.买入规则列表[0] if self.买入规则列表 else {})
             if not 新规则:
                 continue
             累计加仓股数 = int(持仓.get('网格_待加仓股数', 0) or 0)
@@ -2169,7 +2288,8 @@ class 规则执行器:
             # 合并成交必须使用本根新买入信号的实际触发价，不使用历史网格触发价。
             成交哨兵价 = (
                 K线数据.get('前复权_开盘') if 下一根开盘执行
-                else self.哨兵价当前 if 本根有新信号 and self.哨兵价当前 else 触发价
+                else self.哨兵价当前 if 严格网格 and self.哨兵价当前 else
+                (self.哨兵价当前 if 本根有新信号 and self.哨兵价当前 else 触发价)
             )
             成交前股数 = int(持仓.get('股数', 0) or 0)
             已加仓 = self._执行买入(
@@ -2182,7 +2302,7 @@ class 规则执行器:
                 按开盘成交=下一根开盘执行,
                 指定股数=None if 累计加仓金额 > 0 else 累计加仓股数,
                 指定金额=累计加仓金额 if 累计加仓金额 > 0 else None,
-                成交模式="normal" if 下一根开盘执行 else "pullback",
+                成交模式="normal" if (下一根开盘执行 or 严格网格) else "pullback",
             )
             if 已加仓:
                 实际加仓股数 = max(0, int(持仓.get('股数', 0) or 0) - 成交前股数)
@@ -2322,6 +2442,10 @@ class 规则执行器:
         else:
             # 无价格线（时间退出等）：按开盘价 × (1 - 滑点）
             卖出价 = 不复权开盘 * (1 - self.滑点) if 不复权开盘 > 0 else 0
+
+        # 实际不复权成交价按股票报价精度保留两位小数；复权触发价仍
+        # 只用于前面的触发判断，不作为账面成交价。
+        卖出价 = round(float(卖出价), 2)
         
         if 卖出价 <= 0:
             return False

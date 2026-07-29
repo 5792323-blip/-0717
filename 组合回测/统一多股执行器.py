@@ -15,6 +15,7 @@ import yaml
 from 回测引擎.backtest_engine import 准备回测数据
 from 策略引擎.交易账户 import 交易账户
 from 策略引擎.规则执行器 import 规则执行器
+from 数据模块.股票名称 import 获取股票名称
 
 
 def _断管错误(error):
@@ -77,6 +78,7 @@ def _整理股票结果(session, initial_capital, config_snapshot, elapsed):
     ).dropna()
     result.update({
         "股票代码": session["股票代码"],
+        "股票名称": 获取股票名称(session["股票代码"]),
         "初始资金": initial_capital,
         "原始K线数据": data,
         "数据行数": len(data),
@@ -124,6 +126,8 @@ def _提取拒绝订单明细(审批记录):
             str(key): _可序列化审批值(value)
             for key, value in row.items()
         })
+        if "股票名称" not in details[-1]:
+            details[-1]["股票名称"] = 获取股票名称(details[-1].get("股票代码"))
     return details
 
 
@@ -143,7 +147,7 @@ def 运行共享账户回测(
     for stock in stocks:
         data, _, _, _ = 准备回测数据(stock, start, end, config_dir)
         if data is None:
-            errors.append({"股票代码": stock, "错误": "无可用数据或数据不足100行"})
+            errors.append({"股票代码": stock, "股票名称": 获取股票名称(stock), "错误": "无可用数据或数据不足100行"})
             if progress_callback:
                 progress_callback(
                     phase="加载股票数据", completed=len(sessions) + len(errors),
@@ -273,7 +277,7 @@ def 运行共享账户回测(
                         pass
             else:
                 rejected_orders += 1
-                rejection_reasons[str(row.get("原因") or result or "未说明原因")] += 1
+                rejection_reasons[str(row.get("拒绝分类") or row.get("原因") or result or "未说明原因")] += 1
             if str(row.get("审批状态", "")) == "部分成交":
                 partial_fills += 1
             try:

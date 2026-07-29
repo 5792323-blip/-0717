@@ -5,6 +5,7 @@
 import html
 import os
 import re
+import sys
 from pathlib import Path
 
 
@@ -12,6 +13,8 @@ from pathlib import Path
 实验目录 = 项目根目录 / "10_实验记录"
 输出目录 = 项目根目录 / "9_输出"
 输出路径 = 项目根目录 / "9_输出" / "多股票K线回放.html"
+sys.path.insert(0, str(项目根目录))
+from 数据模块.股票名称 import 股票显示名称
 
 
 def _股票代码(path: Path):
@@ -42,7 +45,7 @@ def 生成():
         relative = os.path.relpath(report, 输出路径.parent).replace(os.sep, "/")
         rows.append(
             f'<button class="stock-item" data-code="{code}" data-src="{html.escape(relative)}">'
-            f'<span>{code}</span><small>点击查看 K 线与成交</small></button>'
+            f'<span>{股票显示名称(code)}</span><small>点击查看 K 线与成交</small></button>'
         )
     stock_html = "".join(rows) or '<div class="empty">暂未找到单股票回放报告，请先运行回测。</div>'
     first_src = html.escape(os.path.relpath(next(iter(reports.values()), Path("")), 输出路径.parent).replace(os.sep, "/")) if reports else ""
@@ -64,7 +67,7 @@ def 生成():
 </style></head><body><div class="app"><header class="top"><h1>多股票 K 线回放工作台</h1><span id="selected">请选择股票</span><span>左侧选择股票，右侧查看完整回放</span></header><main class="body"><aside class="sidebar"><div class="side-head"><strong>回测股票</strong><input id="search" placeholder="搜索股票代码"></div><div class="stock-list" id="stockList">{stock_html}</div></aside><section class="viewer"><iframe id="viewer" title="股票回放" src="{first_src}"></iframe></section></main></div>
 <script>
 const items=[...document.querySelectorAll('.stock-item')], viewer=document.getElementById('viewer'), selected=document.getElementById('selected');
-function choose(item){{items.forEach(x=>x.classList.remove('active'));item.classList.add('active');viewer.src=item.dataset.src;selected.textContent=item.dataset.code+' · K线与成交回放';}}
+function choose(item){{items.forEach(x=>x.classList.remove('active'));item.classList.add('active');viewer.src=item.dataset.src;selected.textContent=item.querySelector('span').textContent+' · K线与成交回放';}}
 items.forEach(item=>item.addEventListener('click',()=>choose(item)));
 if(items[0]) choose(items[0]);
 document.getElementById('search').addEventListener('input',e=>{{const q=e.target.value.trim();items.forEach(x=>x.style.display=!q||x.dataset.code.includes(q)?'flex':'none')}});

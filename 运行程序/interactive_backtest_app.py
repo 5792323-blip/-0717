@@ -19,6 +19,7 @@ from datetime import datetime
 
 项目根目录 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, 项目根目录)
+from 数据模块.股票名称 import 获取股票名称
 
 
 class _断管安全流:
@@ -1431,7 +1432,7 @@ def 启动后台回测(form, mode):
           <summary>逐笔拒绝订单明细（<span id="rejectionDetailCount">0</span> 笔）</summary>
           <div class="rejection-table-wrap">
             <table class="rejection-table">
-              <thead><tr><th>股票</th><th>类型</th><th>结果</th><th>原因</th><th>请求股数</th><th>成交股数</th><th>成交价</th><th>时间</th></tr></thead>
+              <thead><tr><th>股票代码</th><th>股票名称</th><th>类型</th><th>结果</th><th>拒绝分类</th><th>详细原因</th><th>请求股数</th><th>成交股数</th><th>成交价</th><th>时间</th></tr></thead>
               <tbody id="rejectionDetailRows"></tbody>
             </table>
           </div>
@@ -2082,8 +2083,9 @@ def 启动后台回测(form, mode):
         count.textContent = Number(payload.total || items.length).toLocaleString('zh-CN');
         details.hidden = !items.length;
         rows.innerHTML = items.map(item => `<tr>
-          <td>${escapeHtml(item['股票代码'])}</td><td>${escapeHtml(item['类型'])}</td>
-          <td>${escapeHtml(item['结果'])}</td><td>${escapeHtml(item['原因'])}</td>
+          <td>${escapeHtml(item['股票代码'])}</td><td>${escapeHtml(item['股票名称'] || '名称待补充')}</td>
+          <td>${escapeHtml(item['类型'])}</td><td>${escapeHtml(item['结果'])}</td>
+          <td>${escapeHtml(item['拒绝分类'] || item['原因'])}</td><td>${escapeHtml(item['详细原因'] || item['原因'])}</td>
           <td>${escapeHtml(item['请求股数'])}</td><td>${escapeHtml(item['成交股数'])}</td>
           <td>${escapeHtml(item['成交价'])}</td><td>${escapeHtml(item['时间'])}</td>
         </tr>`).join('');
@@ -3624,8 +3626,9 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
         legacy["收益贡献率"] = contribution / stock_capital if stock_capital else 0.0
     for item in details:
         stock = str(item.get("股票代码", ""))
+        stock_name = str(item.get("股票名称") or 获取股票名称(stock))
         if "错误" in item:
-            rows.append(f"<tr><td>{stock}</td><td colspan='4'>失败：{item['错误']}</td></tr>")
+            rows.append(f"<tr><td>{stock} · {stock_name}</td><td colspan='4'>失败：{item['错误']}</td></tr>")
             continue
         url = f"/multi/{token}/stock/{stock}"
         if not fallback_stock_url:
@@ -3641,7 +3644,7 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
                 first_stock_url = url
             rows.append(
                 f"<tr data-stock='{stock}' data-return='{contribution_pct}' data-drawdown='{float(item.get('最大回撤', 0))*100}' data-trades='{actual_buys + actual_sells}'>"
-                f"<td><a href='{url}' target='stock_view' title='查看组合实际成交回放'>{stock}</a></td>"
+                f"<td><a href='{url}' target='stock_view' title='查看组合实际成交回放'>{stock} · {stock_name}</a></td>"
                 f"<td class='{'positive' if contribution_pct >= 0 else 'negative'}'>{contribution_pct:+.2f}%</td>"
                 f"<td>{actual_buys}/{actual_sells}</td>"
                 f"<td>{int(portfolio_stock.get('期末股数', 0)):,}</td>"
@@ -3653,7 +3656,7 @@ def 生成多股策略回放页面(path, token, run_dir, details, summary, form,
                 first_stock_url = url
             rows.append(
                 f"<tr data-stock='{stock}' data-return='{return_pct}' data-drawdown='{float(item.get('最大回撤', 0))*100}'>"
-                f"<td><a href='{url}' target='stock_view'>{stock}</a></td>"
+                f"<td><a href='{url}' target='stock_view'>{stock} · {stock_name}</a></td>"
                 f"<td class='{'positive' if return_pct >= 0 else 'negative'}'>{return_pct:+.2f}%</td>"
                 f"<td>{float(item.get('最大回撤', 0))*100:.2f}%</td>"
                 f"<td>{int(item.get('买入次数', 0))}/{int(item.get('卖出次数', 0))}</td>"

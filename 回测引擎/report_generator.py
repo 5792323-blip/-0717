@@ -7,6 +7,7 @@ from datetime import datetime
 sys.path.insert(0, 项目根目录)
 模板路径 = os.path.join(项目根目录, '回测引擎', 'kline_template.html')
 from 策略引擎.反推因子 import 智能反推
+from 数据模块.股票名称 import 获取股票名称
 def _加载数据(股票代码='600519'):
     try:
         from 数据模块.股票加载器 import 加载股票
@@ -19,6 +20,7 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
     if 回测结果 is None:
         return None
     股票代码 = 回测结果.get('股票代码', 'unknown')
+    股票名称 = 回测结果.get('股票名称') or 获取股票名称(股票代码)
     if 输出路径 is None:
         # 单股票回放固定为一个文件，新的回测直接覆盖旧页面。
         输出路径 = os.path.join(项目根目录, '9_输出', f'K线回放_{股票代码}.html')
@@ -48,6 +50,8 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
                         d[col] = float(val)
                     except (ValueError, TypeError):
                         d[col] = str(val)
+            d.setdefault('股票代码', 股票代码)
+            d.setdefault('股票名称', 股票名称)
             交易记录.append(d)
         交易JSON = json.dumps(交易记录, ensure_ascii=False, default=str)
     # K线数据JSON
@@ -432,7 +436,7 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
     _权益JSON = json.dumps([(None if (v is not None and pd.isna(v)) else v) for v in [r.get('权益') for r in k线记录]], ensure_ascii=False)
     
     for k, v in {
-        '%%股票代码%%': 股票代码,
+        '%%股票代码%%': f'{股票代码} · {股票名称}',
         '%%交易JSON%%': 交易JSON,
         '%%K线JSON%%': K线JSON,
         '%%数据行数%%': str(回测结果.get('数据行数', 0)),

@@ -8,6 +8,8 @@
 from collections import defaultdict
 from collections.abc import MutableMapping
 
+from 数据模块.股票名称 import 获取股票名称
+
 
 def _规范股票代码(value):
     code = str(value or "").strip().upper()
@@ -131,7 +133,7 @@ class 股票账户视图:
         return available, limits
 
     def 记录审批(self, **row):
-        item = {"股票代码": self.股票代码}
+        item = {"股票代码": self.股票代码, "股票名称": 获取股票名称(self.股票代码)}
         item.update(row)
         self.账户.审批记录.append(item)
         result = str(row.get("结果", ""))

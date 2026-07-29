@@ -16,6 +16,7 @@ import pandas as pd
 项目根目录 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, 项目根目录)
 
+from 数据模块.股票名称 import 获取股票名称
 from 模块系统 import 模块开关管理器
 from 回测引擎.backtest_engine import 跑回测
 
@@ -49,6 +50,7 @@ def 单股摘要(result, requested_start, requested_end):
     annual_return = (1 + total_return) ** (1 / max(years, 1 / 252)) - 1 if total_return > -1 else -1
     return {
         "股票代码": result.get("股票代码"),
+        "股票名称": result.get("股票名称") or 获取股票名称(result.get("股票代码")),
         "买入次数": int(result.get("买入次数", 0)),
         "卖出次数": int(result.get("卖出次数", 0)),
         "胜率": 安全数值(result.get("胜率")) / 100,
@@ -146,6 +148,7 @@ def _保存多股单票结果(result, stock_dir):
         holding.to_csv(os.path.join(stock_dir, "持仓过程.csv"), index=False, encoding="utf-8-sig")
     with open(os.path.join(stock_dir, "回测摘要.txt"), "w", encoding="utf-8") as target:
         target.write(f"股票代码: {result.get('股票代码', '')}\n")
+        target.write(f"股票名称: {result.get('股票名称') or 获取股票名称(result.get('股票代码'))}\n")
         target.write(f"初始资金: {result.get('初始资金', 0):,.0f}\n")
         target.write(f"最终权益: {result.get('最终权益', 0):,.0f}\n")
         target.write(f"总收益率: {result.get('总收益率', 0):+.2f}%\n")
@@ -172,7 +175,7 @@ def 执行单股任务(task):
                 静默=True,
             )
         if result is None:
-            return {"股票代码": stock, "错误": "无可用回测结果"}
+            return {"股票代码": stock, "股票名称": 获取股票名称(stock), "错误": "无可用回测结果"}
         result['初始资金'] = capital
         report_path = _保存多股单票结果(result, stock_dir) if stock_dir else None
         summary = 单股摘要(result, start, end)
@@ -181,7 +184,7 @@ def 执行单股任务(task):
         summary['回放文件'] = report_path
         return summary
     except Exception as error:
-        return {"股票代码": stock, "错误": str(error)}
+        return {"股票代码": stock, "股票名称": 获取股票名称(stock), "错误": str(error)}
 
 
 def 汇总结果(details):
