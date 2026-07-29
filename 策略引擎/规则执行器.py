@@ -166,6 +166,9 @@ class 规则执行器:
         if not getattr(self, '运行参数', {}).get('共享账户模式', False):
             return
         if hasattr(self, '账户视图'):
+            if hasattr(self, '_组合优先级'):
+                row.setdefault('组合优先级', list(self._组合优先级))
+                row.setdefault('组合撮合规则', getattr(self, '_组合撮合规则', ''))
             if row.get('结果') == '组合层拦截':
                 row.setdefault('拒绝分类', self._拒绝分类(row))
                 row.setdefault('详细原因', self._拒绝详细原因(row))

@@ -50,6 +50,10 @@ def _会话优先级(session):
     )
 
 
+def _组合撮合规则说明():
+    return "已有持仓 > 待网格 > RSI信号强度 > 股票代码"
+
+
 def _读取配置快照(config_dir):
     snapshot = {}
     for name in (
@@ -244,6 +248,8 @@ def 运行共享账户回测(
             row_data = row.to_dict()
             row_data["_上一根RSI"] = session["上一根RSI"]
             row_data["_上一根最低价RSI"] = session["上一根最低价RSI"]
+            session["执行器"]._组合优先级 = _会话优先级(session)
+            session["执行器"]._组合撮合规则 = _组合撮合规则说明()
             session["执行器"].每根K线处理(row_data, 股票位置)
             session["上一根RSI"] = row.get("RSI_14", 50)
             session["上一根最低价RSI"] = row.get(
@@ -378,6 +384,7 @@ def 运行共享账户回测(
         "持仓市值": round(float(account.持仓市值()), 2),
         "资金使用率": round(float(account.持仓市值()) / max(float(account.权益()), 1.0) * 100, 6),
         "持仓数量": len(account.持仓),
+        "组合撮合规则": _组合撮合规则说明(),
     }
     return {
         "账户": account,

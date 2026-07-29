@@ -1,5 +1,6 @@
 import os
 import shutil
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -7,12 +8,38 @@ import yaml
 from 回测引擎.backtest_engine import 准备回测数据
 from 策略引擎.交易账户 import 交易账户
 import 组合回测.统一多股执行器 as multi_engine
-from 组合回测.统一多股执行器 import 运行共享账户回测
+from 组合回测.统一多股执行器 import _会话优先级, 运行共享账户回测
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(ROOT, "1_策略配置")
 DATA = os.path.join(ROOT, "数据模块", "raw", "600519_双价格合并.pkl")
+
+
+def test_shared_account_priority_is_deterministic_and_prefers_pending_grid_positions():
+    existing = {
+        "执行器": SimpleNamespace(
+            当前持仓={"600001": {"股数": 100}},
+            哨兵价形成类型="RSI上穿20",
+        ),
+        "股票代码": "600001",
+    }
+    pending_grid = {
+        "执行器": SimpleNamespace(
+            当前持仓={"600002": {"股数": 100, "网格_待加仓股数": 100}},
+            哨兵价形成类型="RSI上穿70",
+        ),
+        "股票代码": "600002",
+    }
+    new_signal = {
+        "执行器": SimpleNamespace(当前持仓={}, 哨兵价形成类型="RSI上穿30"),
+        "股票代码": "600003",
+    }
+
+    ordered = sorted([new_signal, pending_grid, existing], key=_会话优先级, reverse=True)
+
+    assert [item["股票代码"] for item in ordered] == ["600002", "600001", "600003"]
+    assert _会话优先级(new_signal) == (0, 0, 3, "600003")
 
 
 def test_shared_account_view_is_stock_scoped_but_risk_is_portfolio_wide():
