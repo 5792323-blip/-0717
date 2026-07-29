@@ -983,14 +983,29 @@ def 启动后台回测(form, mode):
             <label>最大持仓数（单股固定为1）</label>
             <input type="number" step="1" name="single_max_positions" value="{{ form.single_max_positions }}">
           </div>
+          <label class="checkbox">
+            <input type="checkbox" name="single_enable_single_limit" {% if form.single_enable_single_limit %}checked{% endif %}>
+            <span>启用单只仓位限制</span>
+            <span class="module-status">关闭后单只股票只受现金和整手规则约束</span>
+          </label>
           <div>
             <label>单只股票累计仓位上限比例（填 0 为不限）</label>
             <input type="number" step="0.01" name="single_max_single_ratio" value="{{ form.single_max_single_ratio }}">
           </div>
+          <label class="checkbox">
+            <input type="checkbox" name="single_enable_total_limit" {% if form.single_enable_total_limit %}checked{% endif %}>
+            <span>启用账户总仓位限制</span>
+            <span class="module-status">关闭后不限制组合总持仓比例</span>
+          </label>
           <div>
             <label>账户总持仓上限比例</label>
             <input type="number" step="0.01" name="single_max_total_ratio" value="{{ form.single_max_total_ratio }}">
           </div>
+          <label class="checkbox">
+            <input type="checkbox" name="single_enable_cash_floor" {% if form.single_enable_cash_floor %}checked{% endif %}>
+            <span>启用最低现金保留</span>
+            <span class="module-status">关闭后现金底线按0处理</span>
+          </label>
           <div>
             <label>最低现金保留比例</label>
             <input type="number" step="0.01" name="single_cash_floor" value="{{ form.single_cash_floor }}">
@@ -1234,14 +1249,29 @@ def 启动后台回测(form, mode):
             <label>最大持仓数（填 0 为不限）</label>
             <input type="number" step="1" name="multi_max_positions" value="{{ form.multi_max_positions }}">
           </div>
+          <label class="checkbox">
+            <input type="checkbox" name="multi_enable_single_limit" {% if form.multi_enable_single_limit %}checked{% endif %}>
+            <span>启用单只仓位限制</span>
+            <span class="module-status">关闭后单只股票只受现金和整手规则约束</span>
+          </label>
           <div>
             <label>单只股票累计仓位上限比例</label>
             <input type="number" step="0.01" name="multi_max_single_ratio" value="{{ form.multi_max_single_ratio }}">
           </div>
+          <label class="checkbox">
+            <input type="checkbox" name="multi_enable_total_limit" {% if form.multi_enable_total_limit %}checked{% endif %}>
+            <span>启用组合总仓位限制</span>
+            <span class="module-status">关闭后不限制组合总持仓比例</span>
+          </label>
           <div>
             <label>组合总持仓上限比例（填 0 为不限）</label>
             <input type="number" step="0.01" name="multi_max_total_ratio" value="{{ form.multi_max_total_ratio }}">
           </div>
+          <label class="checkbox">
+            <input type="checkbox" name="multi_enable_cash_floor" {% if form.multi_enable_cash_floor %}checked{% endif %}>
+            <span>启用最低现金保留</span>
+            <span class="module-status">关闭后现金底线按0处理</span>
+          </label>
           <div>
             <label>最低现金保留比例</label>
             <input type="number" step="0.01" name="multi_cash_floor" value="{{ form.multi_cash_floor }}">
@@ -2439,6 +2469,9 @@ def 构建默认表单():
         "single_max_single_ratio": 1.0,
         "single_max_total_ratio": 1.0,
         "single_cash_floor": 0.0,
+        "single_enable_single_limit": True,
+        "single_enable_total_limit": True,
+        "single_enable_cash_floor": True,
         "multi_universe": "hs300",
         "multi_benchmark": "hs300",
         "multi_stocks": "",
@@ -2461,6 +2494,9 @@ def 构建默认表单():
         "multi_max_single_ratio": 0.03,
         "multi_max_total_ratio": 0.80,
         "multi_cash_floor": 0.20,
+        "multi_enable_single_limit": True,
+        "multi_enable_total_limit": True,
+        "multi_enable_cash_floor": True,
     })
     return form
 
@@ -2676,6 +2712,11 @@ def 规范化表单(form_data):
             normalized[f"{prefix}_switch_核心模块_next_bar_entry"] = False
     normalized["single_full_position_mode"] = form_data.get("single_full_position_mode") == "on"
     normalized["multi_allow_partial_fill"] = form_data.get("multi_allow_partial_fill") == "on"
+    for prefix in ("single", "multi"):
+        for suffix in ("single_limit", "total_limit", "cash_floor"):
+            normalized[f"{prefix}_enable_{suffix}"] = (
+                form_data.get(f"{prefix}_enable_{suffix}") == "on"
+            )
     normalized["multi_historical_constituents"] = (
         str(form_data.get("multi_historical_constituents", "")).strip().lower()
         in ("true", "on", "1")
@@ -2705,6 +2746,13 @@ def 规范化表单(form_data):
     }
     for key, caster in numeric_fields.items():
         normalized[key] = 安全读取表单值(form_data, key, caster, defaults[key])
+    for prefix in ("single", "multi"):
+        if not normalized[f"{prefix}_enable_single_limit"]:
+            normalized[f"{prefix}_max_single_ratio"] = 0.0
+        if not normalized[f"{prefix}_enable_total_limit"]:
+            normalized[f"{prefix}_max_total_ratio"] = 0.0
+        if not normalized[f"{prefix}_enable_cash_floor"]:
+            normalized[f"{prefix}_cash_floor"] = 0.0
     for prefix in ("single", "multi"):
         if normalized[f"{prefix}_grid_mode"] == "lifecycle_budget":
             normalized[f"{prefix}_grid_initial_ratio"] = 0.25
@@ -3028,6 +3076,9 @@ def 提取模式配置(form, prefix):
         "max_single_ratio": form[f"{prefix}_max_single_ratio"],
         "max_total_ratio": form[f"{prefix}_max_total_ratio"],
         "cash_floor": form[f"{prefix}_cash_floor"],
+        "enable_single_limit": form.get(f"{prefix}_enable_single_limit", True),
+        "enable_total_limit": form.get(f"{prefix}_enable_total_limit", True),
+        "enable_cash_floor": form.get(f"{prefix}_enable_cash_floor", True),
         "liquidity_limit": form[f"{prefix}_liquidity_limit"],
         "rsi_period": form[f"{strategy_prefix}_rsi_period"],
         "rsi_price_source": form[f"{strategy_prefix}_rsi_price_source"],
@@ -3094,6 +3145,9 @@ def 归一化单股满仓参数(form):
         form["max_single_ratio"] = 1.0
         form["max_total_ratio"] = 1.0
         form["cash_floor"] = 0.0
+        form["enable_single_limit"] = True
+        form["enable_total_limit"] = True
+        form["enable_cash_floor"] = True
     return form
 
 
@@ -3132,6 +3186,7 @@ def 预检查无成交风险(form, mode):
     start = str(form.get(f"{prefix}_start", "")).strip()
     end = str(form.get(f"{prefix}_end", "")).strip()
     full_position_mode = bool(form.get(f"{prefix}_full_position_mode"))
+    single_limit_enabled = bool(form.get(f"{prefix}_enable_single_limit", True))
 
     buy_switches = [
         bool(form.get(f"{prefix}_switch_买入规则_rsi_cross_20")),
@@ -3148,9 +3203,10 @@ def 预检查无成交风险(form, mode):
         issues.append("资金基准金额必须大于 0。")
     if not full_position_mode and cash_floor >= 1:
         issues.append("最低现金保留比例不能大于等于 1，否则无法开仓。")
-    if max_single_ratio <= 0:
+    if single_limit_enabled and max_single_ratio <= 0:
         issues.append("单只股票累计仓位上限比例必须大于 0，否则无法开仓。")
-    if not full_position_mode and capital > 0 and max_single_ratio > 0 and capital * max_single_ratio < 10000:
+    if (not full_position_mode and single_limit_enabled and capital > 0
+            and max_single_ratio > 0 and capital * max_single_ratio < 10000):
         issues.append("单只股票累计仓位上限比例过低，按当前资金计算可用金额不足1万元，极易无成交。")
     if not full_position_mode and capital > 0 and cash_floor < 1 and capital * (1 - cash_floor) < 10000:
         issues.append("最低现金保留比例过高，剩余可用开仓资金不足1万元，极易无成交。")
