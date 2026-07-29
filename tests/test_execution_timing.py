@@ -612,6 +612,66 @@ def test_market_lot_rules_are_shared_by_buy_and_partial_sell():
     assert 规则执行器._计算卖出股数("600519", 500, 0.5) == 200
 
 
+def test_intrabar_stop_uses_trigger_price_and_gap_down_open():
+    executor = make_executor()
+    executor.滑点 = 0.001
+    executor.佣金率 = 0.0
+    executor.印花税率 = 0.0
+    executor.过户费率 = 0.0
+    executor.当前现金 = 0.0
+    executor.已买入K线数 = 2
+    executor.连续亏损次数 = 0
+    executor.冷却期剩余K线 = 0
+    executor.当前持仓 = {
+        "600519": {
+            "买入时间": 0, "买入价": 100.0, "成本": 10000.0,
+            "总成本": 10000.0, "股数": 100, "持仓组ID": "G1",
+        }
+    }
+    recorded = {}
+    executor.交易记录器 = SimpleNamespace(
+        买入序号=1,
+        记录卖出=lambda **kwargs: recorded.update(kwargs),
+        更新交易记录=lambda *args, **kwargs: None,
+    )
+    executor.本根决策 = {"决策记录": {"卖出": {}}}
+
+    assert executor._执行卖出(
+        executor.当前持仓["600519"], {"说明": "止损"}, 0.0,
+        make_bar(前复权_开盘=100.0, 不复权_开盘=100.0,
+                 前复权_最高=101.0, 前复权_最低=80.0,
+                 不复权_最高=101.0, 不复权_最低=80.0),
+        触发价=90.0, 股票代码="600519",
+    ) is True
+    assert recorded["卖出价"] == 89.91
+
+    executor = make_executor()
+    executor.滑点 = 0.001
+    executor.佣金率 = executor.印花税率 = executor.过户费率 = 0.0
+    executor.当前现金 = 0.0
+    executor.已买入K线数 = 2
+    executor.连续亏损次数 = executor.冷却期剩余K线 = 0
+    executor.当前持仓 = {
+        "600519": {"买入时间": 0, "买入价": 100.0, "成本": 10000.0,
+                    "总成本": 10000.0, "股数": 100, "持仓组ID": "G1"}
+    }
+    recorded = {}
+    executor.交易记录器 = SimpleNamespace(
+        买入序号=1,
+        记录卖出=lambda **kwargs: recorded.update(kwargs),
+        更新交易记录=lambda *args, **kwargs: None,
+    )
+    executor.本根决策 = {"决策记录": {"卖出": {}}}
+    assert executor._执行卖出(
+        executor.当前持仓["600519"], {"说明": "止损"}, 0.0,
+        make_bar(前复权_开盘=80.0, 不复权_开盘=80.0,
+                 前复权_最高=100.0, 前复权_最低=70.0,
+                 不复权_最高=100.0, 不复权_最低=70.0),
+        触发价=90.0, 股票代码="600519",
+    ) is True
+    assert recorded["卖出价"] == 79.92
+
+
 def test_strategy_exceptions_are_recorded_without_interrupting_execution():
     executor = object.__new__(规则执行器)
     executor.本根决策 = {}
