@@ -116,6 +116,22 @@ class 规则执行器:
             and 股票代码 not in self.当前持仓
         )
 
+    def _记录策略异常(self, 模块, error, 当前索引=None):
+        """记录不应静默消失的策略计算异常，但不改变原有容错流程。"""
+        message = str(error) or error.__class__.__name__
+        row = {
+            "模块": str(模块),
+            "错误类型": error.__class__.__name__,
+            "错误信息": message,
+            "K线索引": 当前索引,
+        }
+        self.策略异常记录 = getattr(self, "策略异常记录", [])
+        self.策略异常计数 = getattr(self, "策略异常计数", {})
+        self.策略异常记录.append(row)
+        self.策略异常计数[str(模块)] = self.策略异常计数.get(str(模块), 0) + 1
+        if isinstance(getattr(self, "本根决策", None), dict):
+            self.本根决策.setdefault("策略异常", []).append(row)
+
     def _计算账户结构性可用金额(self, 当前估值价):
         if hasattr(self, '账户视图'):
             return self.账户视图.计算结构性可用金额(
@@ -307,6 +323,8 @@ class 规则执行器:
         self.上一根_RSI_MA = None
         self._上上根_RSI_MA = None
         self.本根决策 = {}
+        self.策略异常记录 = []
+        self.策略异常计数 = {}
 
         # 独立卖出保护：只影响配置中声明的卖出规则（默认仅 ATR 跟踪）。
         self.RSI阈值守仓配置 = next(
@@ -787,8 +805,8 @@ class 规则执行器:
                 背离结果 = _检测背离(pd.Series(self.价格序列), pd.Series(self.RSI序列), 查看K线数=60)
                 self.有底背离 = 背离结果.get('底背离', False)
                 self.有顶背离 = 背离结果.get('顶背离', False)
-            except:
-                pass
+            except Exception as error:
+                self._记录策略异常("背离检测", error, 当前索引)
         
         # 当前K线只负责检查上一根收盘前已经存在的哨兵价。
         # 本标记只描述当前收盘后形成、供下一根使用的信号，不能污染本根买入检查。
@@ -905,6 +923,7 @@ class 规则执行器:
             哨兵价可执行=getattr(self, '哨兵价可执行', False),
             哨兵价已消费价格=getattr(self, '哨兵价已消费价格', None),
             最近成交哨兵价=getattr(self, '最近成交哨兵价', None),
+            策略异常=self.本根决策.get("策略异常", []),
             本根反推价=self.本根反推价,
             本根反推信号类型=self.本根反推信号类型,
             本根反推目标RSI=self.本根反推目标RSI,
@@ -1289,8 +1308,8 @@ class 规则执行器:
                     if not np.any(np.isnan([x for x in 前窗口15 if x is not None])):
                         结果 = 智能反推(前窗口15, RSI_MA_上一根=self.上一根_RSI_MA)
                         反推哨兵价 = 结果.get('目标价位')
-                except:
-                    pass
+                except Exception as error:
+                    self._记录策略异常("买入反推备用", error, 当前索引)
             哨兵价 = 反推哨兵价 if 反推哨兵价 is not None else 前复权收盘
         
         self.交易记录器.记录信号K线(
@@ -1914,8 +1933,8 @@ class 规则执行器:
                 for c in 候选列表:
                     if c['是否有效'] and c['目标价位'] and 当前最高 >= c['目标价位']:
                         self.交易记录器.记录反推价突破(c['目标价位'], c['目标RSI'], c['关卡名'])
-            except Exception as e:
-                pass
+            except Exception as error:
+                self._记录策略异常("卖出反推突破", error, 当前索引)
         
         # 遍历卖出规则
         前复权最低 = K线数据.get('前复权_最低', 0)
@@ -2441,8 +2460,8 @@ class 规则执行器:
                             当前最低价=当前最低,
                     )
                     return 结果.get('站岗价')
-                except Exception as e:
-                    pass
+                except Exception as error:
+                    self._记录策略异常("站岗价计算", error, None)
         
         # 3. 其他规则（时间退出等）→ 没有价格线
         return None
@@ -2561,6 +2580,8 @@ class 规则执行器:
             "期末持仓市值": 持仓市值,
             "最终权益": self.当前现金 + 持仓市值,
             "剩余持仓": len(self.当前持仓),
+            "策略异常记录": list(getattr(self, "策略异常记录", [])),
+            "策略异常计数": dict(getattr(self, "策略异常计数", {})),
         }
 
 

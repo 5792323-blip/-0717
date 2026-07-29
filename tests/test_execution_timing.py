@@ -610,3 +610,19 @@ def test_market_lot_rules_are_shared_by_buy_and_partial_sell():
     assert 规则执行器._计算卖出股数("688001", 600, 0.5) == 200
     assert 规则执行器._计算卖出股数("688001", 200, 0.5) == 200
     assert 规则执行器._计算卖出股数("600519", 500, 0.5) == 200
+
+
+def test_strategy_exceptions_are_recorded_without_interrupting_execution():
+    executor = object.__new__(规则执行器)
+    executor.本根决策 = {}
+
+    executor._记录策略异常("反推测试", ValueError("字段缺失"), 12)
+
+    assert executor.策略异常计数 == {"反推测试": 1}
+    assert executor.策略异常记录 == [{
+        "模块": "反推测试",
+        "错误类型": "ValueError",
+        "错误信息": "字段缺失",
+        "K线索引": 12,
+    }]
+    assert executor.本根决策["策略异常"] == executor.策略异常记录
