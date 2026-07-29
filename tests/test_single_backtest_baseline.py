@@ -43,14 +43,14 @@ def test_verified_single_backtest_with_persistent_sentinel_is_stable():
         "最终动作", "当前现金", "持仓市值", "权益", "持仓数量",
     ]
 
-    assert result["买入次数"] == 173
-    assert result["卖出次数"] == 172
-    assert result["最终现金"] == pytest.approx(19_941_413.85478359, abs=1e-6)
-    assert result["最终权益"] == pytest.approx(20_114_013.85478359, abs=1e-6)
-    assert result["总收益率"] == pytest.approx(0.5700692739179545, abs=1e-9)
+    assert result["买入次数"] == 109
+    assert result["卖出次数"] == 108
+    assert result["最终现金"] == pytest.approx(19_861_005.634759996, abs=1e-6)
+    assert result["最终权益"] == pytest.approx(20_033_605.634759996, abs=1e-6)
+    assert result["总收益率"] == pytest.approx(0.16802817379998045, abs=1e-9)
     assert _frame_digest(trades, trade_columns) == (
-        "8f3346c74210309ee418e20ee4dbc43810777e1bc68e8edb89beb7b8ae49ca44"
+        "c0888484ae4f3cb089402e0d93ac5e16bdffaf26efb1994d97554c4f71b3f2b9"
     )
     assert _frame_digest(process, process_columns) == (
-        "6d159f87c6d7ddbb008c2df1abdced164a755c1c494cb374a3b86f239205aa44"
+        "817561be95bda9c763e82523333b044d73308ca8aa4ab58bf064dc25158d4d4a"
     )

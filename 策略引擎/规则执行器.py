@@ -941,8 +941,12 @@ class 规则执行器:
             else:
                 return
             结果 = 计算Wilder上涨反推价(历史价格[-15:], 目标RSI)
-            反推价 = 结果.get('目标价位')
-            target = float(结果.get('目标RSI'))
+            # Wilder 反推接口返回“RSI反推价”；兼容旧实现的“目标价位”
+            # 只作为过渡，避免字段协议不一致时静默变成零交易。
+            反推价 = 结果.get('RSI反推价', 结果.get('目标价位'))
+            if not 结果.get('可用', 反推价 is not None) or 反推价 is None:
+                return
+            target = float(结果.get('目标RSI', 目标RSI))
             signal_by_threshold = {
                 阈值20: 'RSI上穿20', 阈值30: 'RSI上穿30', 阈值70: 'RSI上穿70',
             }
