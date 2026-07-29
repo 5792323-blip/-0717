@@ -583,6 +583,8 @@ def test_sell_rule_uses_previous_completed_close():
 
 def test_new_sentinel_is_not_rechecked_after_same_bar_precheck():
     executor = 规则执行器("1_策略配置")
+    executor.买入时机模式 = "precomputed_stop_entry"
+    executor._核心模块启用 = lambda name, default=False: name in {"下一根执行", "本根形成立即成交"}
     checks = []
 
     executor._预计算本根哨兵价 = lambda: None
