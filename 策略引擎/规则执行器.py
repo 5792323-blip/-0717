@@ -1401,12 +1401,7 @@ class 规则执行器:
             str(信号类型 or '').startswith('网格加仓')
             and (指定股数 is not None or 指定金额 is not None)
         )
-        if 股票代码.startswith(('688', '689')):
-            最低交易单位 = 200
-        elif 股票代码.startswith(('4', '8', '9')):
-            最低交易单位 = 300
-        else:
-            最低交易单位 = 100
+        最低交易单位 = self._最低交易单位(股票代码)
         一手金额 = 买入价 * 最低交易单位
         当前规则 = self._获取买入规则(信号类型 or self.哨兵价形成类型)
         单笔上限 = 当前规则.get('单笔买入上限') if 当前规则 else None
@@ -2371,6 +2366,33 @@ class 规则执行器:
             return 0.30
         return float(getattr(self, '涨跌停比例', 0.10))
 
+    @staticmethod
+    def _最低交易单位(股票代码):
+        """返回当前板块的整手单位，买入和部分卖出共用。"""
+        code = str(股票代码 or '').strip().upper()
+        for prefix in ('SH_', 'SZ_', 'BJ_'):
+            if code.startswith(prefix):
+                code = code[len(prefix):]
+        if code.startswith(('688', '689')):
+            return 200
+        if code.startswith(('4', '8', '9')):
+            return 300
+        return 100
+
+    @classmethod
+    def _计算卖出股数(cls, 股票代码, 原股数, 卖出比例):
+        """按板块单位取整；不足一手时清空剩余持仓，避免非法零碎卖出。"""
+        原股数 = max(0, int(原股数 or 0))
+        比例 = min(max(float(卖出比例 or 1.0), 0.0), 1.0)
+        请求股数 = int(原股数 * 比例)
+        if 请求股数 <= 0:
+            return 0
+        if 请求股数 >= 原股数:
+            return 原股数
+        单位 = cls._最低交易单位(股票代码)
+        取整股数 = (请求股数 // 单位) * 单位
+        return 取整股数 if 取整股数 >= 单位 else 原股数
+
     def _封死涨停(self, K线数据):
         """当根开高低收均在涨停价，视为封死涨停，不能追买。"""
         涨停价, _ = self._涨跌停价(K线数据)
@@ -2456,9 +2478,7 @@ class 规则执行器:
         
         原股数 = int(持仓['股数'])
         卖出比例 = min(max(float(卖出比例 or 1.0), 0.0), 1.0)
-        卖出股数 = int(原股数 * 卖出比例 / 100) * 100
-        if 卖出比例 > 0 and 卖出股数 < 100:
-            卖出股数 = min(100, 原股数)
+        卖出股数 = self._计算卖出股数(股票代码, 原股数, 卖出比例)
         if 卖出股数 <= 0:
             return False
         卖出金额 = 卖出股数 * 卖出价

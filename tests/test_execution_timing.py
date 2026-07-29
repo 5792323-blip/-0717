@@ -599,3 +599,12 @@ def test_new_sentinel_is_not_rechecked_after_same_bar_precheck():
     executor.每根K线处理(make_bar(), 20)
 
     assert len(checks) == 1
+
+
+def test_market_lot_rules_are_shared_by_buy_and_partial_sell():
+    assert 规则执行器._最低交易单位("688001") == 200
+    assert 规则执行器._最低交易单位("BJ_430001") == 300
+    assert 规则执行器._最低交易单位("600519") == 100
+    assert 规则执行器._计算卖出股数("688001", 600, 0.5) == 200
+    assert 规则执行器._计算卖出股数("688001", 200, 0.5) == 200
+    assert 规则执行器._计算卖出股数("600519", 500, 0.5) == 200
