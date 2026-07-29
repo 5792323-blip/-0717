@@ -1470,7 +1470,7 @@ def 启动后台回测(form, mode):
           <span id="progressDetail" class="progress-detail">{% if progress and progress.status != 'idle' %}{{ progress.phase or '' }} · {{ progress.message or '' }}{% else %}等待回测{% endif %}</span>
         </div>
         <div id="progressTask" class="progress-task">任务：{{ progress.task_label if progress and progress.status != 'idle' else '--' }}</div>
-        <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+        <div class="progress-track"><div id="progressBar" class="progress-bar" style="width: {% if progress and progress.total %}{{ [100, (progress.completed / progress.total * 100)|round(1)]|min }}{% else %}0{% endif %}%;"></div></div>
         <div class="progress-meta"><span id="progressCount">{% if progress and progress.status != 'idle' %}{{ progress.completed or 0 }} / {{ progress.total or 0 }} {{ progress.unit or '' }}{% else %}0 / 0{% endif %}</span><span id="progressTrades">实际成交 {{ (progress.trades or 0) if progress and progress.status != 'idle' else 0 }} 笔</span><button id="stopBacktest" class="secondary" type="button">停止回测</button><a id="checkpointLink" class="secondary" href="/api/backtest-checkpoint" target="_blank">查看最近检查点</a></div>
         <div id="liveMetrics" class="live-metrics"></div>
         <div id="rejectionSummary" class="rejection-summary"><strong>拒绝订单汇总：</strong> {% if progress and progress.status != 'idle' %}{{ (progress.live or {}).get('拒绝订单', 0) }} 笔{% else %}等待回测数据{% endif %}</div>
