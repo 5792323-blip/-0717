@@ -225,12 +225,13 @@ def 启动后台回测(form, mode):
         清理旧交互回测数据()
         task_id = uuid.uuid4().hex
         started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        task_total = 1 if mode == "single" else len(解析多股输入(form))
         回测停止事件.clear()
         回测拒绝订单明细.clear()
         回测进度.clear()
         回测进度.update({
             "task_id": task_id, "status": "starting", "mode": mode,
-            "phase": "准备回测", "completed": 0, "total": 0,
+            "phase": "准备回测", "completed": 0, "total": task_total,
             "unit": "股票", "trades": 0, "message": "正在启动回测", "error": False,
             "live": {}, "run_dir": None, "started_at": started_at,
             "updated_at": started_at, "checkpoint_path": None,
@@ -317,6 +318,7 @@ def 启动后台回测(form, mode):
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% if progress and progress.status in ('starting', 'running', 'stopping', 'finalizing') %}<meta http-equiv="refresh" content="5">{% endif %}
   <title>策略0717 回测页面</title>
   <style>
     :root {
