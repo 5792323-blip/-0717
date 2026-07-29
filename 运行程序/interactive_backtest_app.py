@@ -2144,8 +2144,12 @@ def 启动后台回测(form, mode):
         renderProgress(state);
         await pollRejections();
         await pollReturnCurve();
+        if (['starting', 'running', 'stopping'].includes(state.status) && !progressTimer) {
+          progressTimer = setInterval(pollProgress, 1000);
+        }
         if (['completed', 'stopped', 'failed'].includes(state.status)) {
           clearInterval(progressTimer);
+          progressTimer = null;
           // 保留最终状态卡，用户可以直接打开本次报告；不自动跳转或重复提交 POST。
         }
       } catch (error) {
@@ -2171,10 +2175,9 @@ def 启动后台回测(form, mode):
         document.getElementById('progressDetail').textContent = error.message || '停止请求失败';
       }
     });
-    if (progressInitial && ['starting', 'running', 'stopping'].includes(progressInitial.status)) {
-      progressTimer = setInterval(pollProgress, 1000);
-      pollProgress();
-    }
+    // 页面可能是因“已有回测正在运行”重新加载，此时服务端已有任务但
+    // 本次 HTML 的初始状态仍可能是 idle，必须主动查询一次才能恢复进度卡。
+    pollProgress();
   </script>
 </body>
 </html>
@@ -3871,10 +3874,10 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
             stock = str(result.get("股票代码", ""))
             result_dir = stock_dirs[stock]
             report_path = _保存多股单票结果(result, result_dir)
-            生成报告(
-                result, result.get("原始K线数据"),
-                输出路径=os.path.join(result_dir, "策略决策回放.html"),
-            )
+            # 个股回放改为按需生成，避免一次多股回测预生成数百个大 HTML
+            # 阻塞工作台并占用数十 GB 磁盘；交易和统计结果不受影响。
+            from 运行程序.run_backtest import _保存多股回放数据
+            _保存多股回放数据(result, result_dir)
             item = 单股摘要(result, form["start"], form["end"])
             item.update({
                 "初始资金": form["capital"],
@@ -4511,10 +4514,40 @@ def 查看多股单票回放(token, stock):
     safe_stock = "".join(ch for ch in str(stock) if ch.isalnum() or ch in "_-" )
     path = os.path.join(最近多股报告["run_dir"], "股票", safe_stock, "策略决策回放.html")
     if not os.path.isfile(path):
-        return Response("该股票没有可用回放。", status=404, content_type="text/plain; charset=utf-8")
-    with open(path, encoding="utf-8") as source:
-        html = 修复旧版回放脚本(source.read())
-    return Response(html, mimetype="text/html")
+        # 新版结果只保存压缩行情快照，首次访问个股时才生成 HTML。
+        snapshot_path = os.path.join(
+            最近多股报告["run_dir"], "股票", safe_stock, "回放行情.csv.gz"
+        )
+        trades_path = os.path.join(
+            最近多股报告["run_dir"], "股票", safe_stock, "交易明细.csv"
+        )
+        holding_path = os.path.join(
+            最近多股报告["run_dir"], "股票", safe_stock, "持仓过程.csv"
+        )
+        if not os.path.isfile(snapshot_path):
+            return Response("该股票没有可用回放。", status=404, content_type="text/plain; charset=utf-8")
+        try:
+            data = pd.read_csv(snapshot_path, compression="gzip")
+            if "完整时间" in data.columns:
+                data["完整时间"] = pd.to_datetime(data["完整时间"], errors="coerce")
+                data.index = data["完整时间"]
+            trades = pd.read_csv(trades_path) if os.path.isfile(trades_path) else pd.DataFrame()
+            holding = pd.read_csv(holding_path) if os.path.isfile(holding_path) else pd.DataFrame()
+            result = {
+                "股票代码": safe_stock,
+                "交易明细": trades,
+                "持仓过程": holding,
+                "原始K线数据": data,
+            }
+            result_path = os.path.join(
+                最近多股报告["run_dir"], "股票", safe_stock, "策略决策回放.html"
+            )
+            生成报告(result, data, 输出路径=result_path)
+            path = result_path
+        except (OSError, ValueError, KeyError, pd.errors.ParserError) as error:
+            return Response(f"个股回放生成失败：{error}", status=500, content_type="text/plain; charset=utf-8")
+    # send_file 避免把几十 MB HTML 再复制到 Flask 进程内存。
+    return send_file(path, mimetype="text/html", conditional=True)
 
 
 @应用.route("/output/<path:filename>")
