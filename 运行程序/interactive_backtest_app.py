@@ -1464,14 +1464,14 @@ def 启动后台回测(form, mode):
       </div>
       <div id="backtestProgress" class="panel result-card progress-card {% if progress and progress.status != 'idle' %}active{% endif %}" aria-live="polite">
         <div class="progress-head">
-          <span id="progressTitle" class="progress-title">回测进度</span>
-          <span id="progressDetail" class="progress-detail">等待回测</span>
+          <span id="progressTitle" class="progress-title">{% if progress and progress.status == 'failed' %}回测失败{% elif progress and progress.status == 'completed' %}回测完成{% elif progress and progress.status == 'stopped' %}回测已停止（部分结果）{% elif progress and progress.status != 'idle' %}回测正在运行{% else %}回测进度{% endif %}</span>
+          <span id="progressDetail" class="progress-detail">{% if progress and progress.status != 'idle' %}{{ progress.phase or '' }} · {{ progress.message or '' }}{% else %}等待回测{% endif %}</span>
         </div>
-        <div id="progressTask" class="progress-task">任务：--</div>
+        <div id="progressTask" class="progress-task">任务：{{ progress.task_label if progress and progress.status != 'idle' else '--' }}</div>
         <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
-        <div class="progress-meta"><span id="progressCount">0 / 0</span><span id="progressTrades">实际成交 0 笔</span><button id="stopBacktest" class="secondary" type="button">停止回测</button><a id="checkpointLink" class="secondary" href="/api/backtest-checkpoint" target="_blank">查看最近检查点</a></div>
+        <div class="progress-meta"><span id="progressCount">{% if progress and progress.status != 'idle' %}{{ progress.completed or 0 }} / {{ progress.total or 0 }} {{ progress.unit or '' }}{% else %}0 / 0{% endif %}</span><span id="progressTrades">实际成交 {{ (progress.trades or 0) if progress and progress.status != 'idle' else 0 }} 笔</span><button id="stopBacktest" class="secondary" type="button">停止回测</button><a id="checkpointLink" class="secondary" href="/api/backtest-checkpoint" target="_blank">查看最近检查点</a></div>
         <div id="liveMetrics" class="live-metrics"></div>
-        <div id="rejectionSummary" class="rejection-summary"><strong>拒绝订单汇总：</strong> 等待回测数据</div>
+        <div id="rejectionSummary" class="rejection-summary"><strong>拒绝订单汇总：</strong> {% if progress and progress.status != 'idle' %}{{ (progress.live or {}).get('拒绝订单', 0) }} 笔{% else %}等待回测数据{% endif %}</div>
         <details id="rejectionDetails" class="rejection-details" hidden>
           <summary>逐笔拒绝订单明细（<span id="rejectionDetailCount">0</span> 笔）</summary>
           <div class="rejection-table-wrap">
