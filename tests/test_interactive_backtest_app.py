@@ -28,6 +28,40 @@ def test_extracts_hs300_and_excess_return_from_portfolio_curve():
     assert metrics == {"沪深300收益率": 22.0, "超额收益率": 13.0}
 
 
+def test_normalize_form_preserves_boolean_module_switches():
+    form = 构建默认表单()
+    form["single_switch_买入规则_rsi_cross_20"] = True
+    form["multi_switch_买入规则_rsi_cross_20"] = True
+
+    normalized = 规范化表单(form)
+
+    assert normalized["single_switch_买入规则_rsi_cross_20"] is True
+    assert normalized["multi_switch_买入规则_rsi_cross_20"] is True
+
+
+def test_workbench_template_separates_single_and_multi_sections():
+    source = open(os.path.join(ROOT, "运行程序", "interactive_backtest_app.py"), encoding="utf-8").read()
+
+    assert "document.querySelectorAll('[data-mode-section]')" in source
+    assert "node.hidden = node.dataset.modeSection !== mode;" in source
+
+
+def test_workbench_template_keeps_module_parameter_inputs_full_width():
+    source = open(os.path.join(ROOT, "运行程序", "interactive_backtest_app.py"), encoding="utf-8").read()
+
+    assert ".param-row {\n      display: grid;\n      grid-template-columns: minmax(0, 1fr);" in source
+    assert ".param-row input,\n    .param-row textarea {\n      width: 100%;" in source
+
+
+def test_normalize_form_accepts_serialized_historical_constituents_flag():
+    form = 构建默认表单()
+    form["multi_historical_constituents"] = "True"
+
+    normalized = 规范化表单(form)
+
+    assert normalized["multi_historical_constituents"] is True
+
+
 def test_repairs_legacy_rsi_attribution_script_without_changing_other_html():
     legacy = "<script>group.buys.reduce((sum,buy)=>sum+(Number(buy['总成本'])||((Number(buy['买入价'])||0)*(Number(buy['成交数量'])||0)),0);</script>"
 
@@ -256,7 +290,8 @@ def test_home_page_renders():
     assert "网格加仓时机" in body
     assert "资金基准金额" in body
     assert "各信号资金计划" in body
-    assert "倍数加仓：1/2/4/8/16" in body
+    assert "线性加仓：L0=1 / L1=2 / L2=3 / L3=4 / L4=5" in body
+    assert "倍数加仓：L0=1 / L1=2 / L2=4 / L3=8 / L4=16" in body
     assert "单只股票累计仓位上限比例" in body
     assert "组合总持仓上限比例" in body
     assert "RSI价格源" in body
@@ -287,7 +322,7 @@ def test_home_page_renders():
     assert 'name="single_switch_扩展因子_xgboost_trend"' in body
     assert 'name="single_switch_扩展因子_xgboost_trend"' in body and "disabled" in body
     assert re.search(r"① 入场信号</span><span class=\"fold-count\">4 项（\d+项）</span>", body)
-    assert re.search(r"② 入场确认与过滤</span><span class=\"fold-count\">22 项（\d+项）</span>", body)
+    assert re.search(r"② 入场确认与过滤</span><span class=\"fold-count\">25 项（\d+项）</span>", body)
     assert "③ 仓位与网格" in body
     assert "④ 成交执行" in body
     assert "⑤ 卖出与持仓管理" in body

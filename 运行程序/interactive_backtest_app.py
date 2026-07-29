@@ -265,7 +265,9 @@ def 启动后台回测(form, mode):
         ("rsi_resonance_filter", "RSI多信号共振"),
         ("rsi_regime_adaptive_filter", "RSI市场状态自适应"),
         ("fundamental_universe_filter", "基本面股票池准入"),
+        ("fundamental_score_filter", "基本面评分准入"),
         ("industry_boom_filter", "行业景气历史准入"),
+        ("fundamental_industry_combo_filter", "个股基本面与行业景气联合准入"),
         ("index_trend_filter", "沪深300长期趋势过滤"),
         ("volume_spike_filter", "上一交易日成交额确认"),
         ("market_regime_filter", "沪深300市场状态过滤"),
@@ -1032,7 +1034,7 @@ def 启动后台回测(form, mode):
             <select name="single_grid_mode">
               <option value="fixed_tranche" {% if form.single_grid_mode == 'fixed_tranche' %}selected{% endif %}>固定分层：每层同额</option>
               <option value="linear" {% if form.single_grid_mode == 'linear' %}selected{% endif %}>线性加仓：L0=1 / L1=2 / L2=3 / L3=4 / L4=5</option>
-              <option value="multiplier" hidden {% if form.single_grid_mode == 'multiplier' %}selected{% endif %}>倍数加仓（兼容旧配置）</option>
+              <option value="multiplier" {% if form.single_grid_mode == 'multiplier' %}selected{% endif %}>倍数加仓：L0=1 / L1=2 / L2=4 / L3=8 / L4=16</option>
               <option value="lifecycle_budget" hidden {% if form.single_grid_mode == 'lifecycle_budget' %}selected{% endif %}>生命周期预算（兼容旧配置）</option>
             </select>
           </div>
@@ -1127,7 +1129,7 @@ def 启动后台回测(form, mode):
                 <div class="param-row">
                   <label>{{ param.key }}</label>
                   {% if param.type == 'bool' %}
-                  <span class="param-bool"><input type="checkbox" name="{{ param.name }}" {% if param.checked %}checked{% endif %}>启用</span>
+                  <span class="param-bool"><input type="checkbox" name="{{ param.name }}" {% if param.checked %}checked{% endif %}>{% if param.key == '价格确认' %}启用价格确认{% else %}启用{% endif %}</span>
                   {% elif param.type == 'yaml' %}
                   <textarea name="{{ param.name }}">{{ param.value }}</textarea>
                   {% else %}
@@ -1187,7 +1189,7 @@ def 启动后台回测(form, mode):
             <select name="multi_grid_mode">
               <option value="fixed_tranche" {% if form.multi_grid_mode == 'fixed_tranche' %}selected{% endif %}>固定分层：每层同额</option>
               <option value="linear" {% if form.multi_grid_mode == 'linear' %}selected{% endif %}>线性加仓：L0=1 / L1=2 / L2=3 / L3=4 / L4=5</option>
-              <option value="multiplier" hidden {% if form.multi_grid_mode == 'multiplier' %}selected{% endif %}>倍数加仓（兼容旧配置）</option>
+              <option value="multiplier" {% if form.multi_grid_mode == 'multiplier' %}selected{% endif %}>倍数加仓：L0=1 / L1=2 / L2=4 / L3=8 / L4=16</option>
               <option value="lifecycle_budget" hidden {% if form.multi_grid_mode == 'lifecycle_budget' %}selected{% endif %}>生命周期预算（兼容旧配置）</option>
             </select>
           </div>
@@ -1373,7 +1375,7 @@ def 启动后台回测(form, mode):
                 <div class="param-row">
                   <label>{{ param.key }}</label>
                   {% if param.type == 'bool' %}
-                  <span class="param-bool"><input type="checkbox" name="{{ param.name }}" {% if param.checked %}checked{% endif %}>启用</span>
+                  <span class="param-bool"><input type="checkbox" name="{{ param.name }}" {% if param.checked %}checked{% endif %}>{% if param.key == '价格确认' %}启用价格确认{% else %}启用{% endif %}</span>
                   {% elif param.type == 'yaml' %}
                   <textarea name="{{ param.name }}">{{ param.value }}</textarea>
                   {% else %}
@@ -3127,6 +3129,33 @@ def 预检查无成交风险(form, mode):
         issues.append("资金基准金额低于1万元，容易因为100股起买约束导致无成交。")
     if not any(buy_switches):
         issues.append("买入规则已全部关闭，单股回测不会产生任何成交。")
+    if form.get(f"{prefix}_switch_过滤因子_fundamental_industry_combo_filter"):
+        readiness = os.path.join(项目根目录, "基本面", "运行记录", "联合评分管线报告.json")
+        try:
+            with open(readiness, encoding="utf-8") as source:
+                report = json.load(source)
+        except (OSError, ValueError, json.JSONDecodeError):
+            report = {"通过": False}
+        if not report.get("通过"):
+            issues.append("个股基本面与行业景气联合准入尚未就绪，请先补齐发布日期、个股快照和行业历史评分。")
+    if form.get(f"{prefix}_switch_过滤因子_fundamental_score_filter"):
+        score_path = os.path.join(项目根目录, "基本面", "个股评分结果.csv")
+        try:
+            score_dates = pd.to_datetime(pd.read_csv(score_path, usecols=["评分日期"])["评分日期"], errors="coerce").dropna()
+        except (OSError, ValueError, pd.errors.ParserError):
+            score_dates = pd.Series(dtype="datetime64[ns]")
+        if score_dates.empty:
+            issues.append("基本面评分准入已开启，但没有可用的个股评分文件。")
+        elif start and pd.Timestamp(start) < score_dates.min():
+            issues.append(f"基本面评分只有{score_dates.min():%Y-%m-%d}及之后的快照，当前回测开始日期过早；请先补充历史评分或关闭该过滤因子。")
+        historical_audit_path = os.path.join(项目根目录, "基本面", "运行记录", "个股历史基本面审计.json")
+        try:
+            with open(historical_audit_path, encoding="utf-8") as source:
+                historical_audit = json.load(source)
+        except (OSError, ValueError, json.JSONDecodeError):
+            historical_audit = {"通过": False}
+        if not historical_audit.get("通过"):
+            issues.append("个股历史基本面数据尚未通过完整性审计；当前快照不能直接用于历史回测。")
     if mode == "single" and not str(form.get("single_stock", "")).strip():
         issues.append("单股模式必须填写股票代码。")
     if (mode == "multi" and form.get("multi_portfolio_mode") == "independent"

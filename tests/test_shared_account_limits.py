@@ -25,6 +25,7 @@ def test_shared_account_view_is_stock_scoped_but_risk_is_portfolio_wide():
     assert list(a.持仓) == ["SH_600001"]
     assert list(b.持仓) == []
     assert b.已达到最大持仓数(1) is True
+    assert b.已达到最大持仓数(0) is False
 
     available, limits = b.计算结构性可用金额(
         estimate_price=50.0,
@@ -35,6 +36,39 @@ def test_shared_account_view_is_stock_scoped_but_risk_is_portfolio_wide():
     assert limits["当前权益"] == pytest.approx(110_000)
     assert limits["持仓市值"] == pytest.approx(10_000)
     assert available == pytest.approx(33_000)
+
+
+def test_zero_total_position_ratio_disables_only_total_position_cap():
+    account = 交易账户(100_000)
+    view = account.股票视图("600001")
+    view.持仓["SH_600001"] = {"股数": 100, "买入价": 100.0}
+    view.更新估值价(100.0)
+
+    available, limits = view.计算结构性可用金额(
+        estimate_price=50.0,
+        max_single_ratio=0.30,
+        max_total_ratio=0.0,
+        cash_floor=0.20,
+    )
+
+    assert available == pytest.approx(31_500)
+    assert limits["总仓位限制已关闭"] is True
+
+
+def test_zero_single_and_total_position_ratios_leave_cash_as_only_limit():
+    account = 交易账户(100_000)
+    view = account.股票视图("600001")
+
+    available, limits = view.计算结构性可用金额(
+        estimate_price=50.0,
+        max_single_ratio=0.0,
+        max_total_ratio=0.0,
+        cash_floor=0.0,
+    )
+
+    assert available == pytest.approx(100_000)
+    assert limits["单只仓位限制已关闭"] is True
+    assert limits["总仓位限制已关闭"] is True
 
 
 @pytest.mark.skipif(not os.path.isfile(DATA), reason="缺少600519本地行情")

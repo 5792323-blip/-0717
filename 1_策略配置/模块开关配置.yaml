@@ -66,6 +66,21 @@
       启用: false
       状态: 实验
       模块: 8_过滤因子.fundamental_universe_filter
+    fundamental_score_filter:
+      名称: 基本面评分准入
+      启用: false
+      状态: 实验
+      模块: 8_过滤因子.fundamental_score_filter
+    industry_boom_filter:
+      名称: 行业景气历史准入
+      启用: false
+      状态: 未就绪
+      模块: 8_过滤因子.industry_boom_filter
+    fundamental_industry_combo_filter:
+      名称: 个股基本面与行业景气联合准入
+      启用: false
+      状态: 未就绪
+      模块: 8_过滤因子.fundamental_industry_combo_filter
     index_trend_filter:
       名称: 沪深300长期趋势
       启用: false

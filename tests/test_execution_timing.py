@@ -33,7 +33,7 @@ def make_bar(**overrides):
 
 def test_grid_retracement_uses_intrabar_low_not_close():
     factor = 网格加仓({"最大加仓次数": 3, "首次回撤阈值": 0.05})
-    position = {"网格_首笔股数": 100, "网格_基准最高价": 100.0}
+    position = {"网格_首笔股数": 100, "网格_首次买入价": 100.0, "网格_基准最高价": 120.0}
 
     result = factor.加仓前检查(
         position,
@@ -51,7 +51,8 @@ def test_grid_retracement_levels_are_linear_multiples_of_initial_threshold():
     for completed, expected in enumerate((97.0, 94.0, 91.0, 88.0, 85.0)):
         position = {
             "网格_首笔股数": 100,
-            "网格_基准最高价": 100.0,
+            "网格_首次买入价": 100.0,
+            "网格_基准最高价": 120.0,
             "网格_已触发次数": completed,
         }
         result = factor.加仓前检查(position, {"前复权_最低": expected}, {})
@@ -60,7 +61,7 @@ def test_grid_retracement_levels_are_linear_multiples_of_initial_threshold():
 
 
 def test_existing_linear_and_multiplier_grid_share_sequences_are_unchanged():
-    position = {"网格_首笔股数": 100, "网格_基准最高价": 100.0}
+    position = {"网格_首笔股数": 100, "网格_首次买入价": 100.0, "网格_基准最高价": 120.0}
     bar = {"前复权_最低": 0.01}
 
     linear = 网格加仓({"最大加仓次数": 4, "首次回撤阈值": 0.03, "加仓模式": "linear"})
@@ -79,6 +80,17 @@ def test_existing_linear_and_multiplier_grid_share_sequences_are_unchanged():
     ] == [200, 400, 800, 1600]
 
 
+def test_grid_defaults_to_linear_l0_to_l4_sizing():
+    factor = 网格加仓({"最大加仓次数": 4, "首次回撤阈值": 0.03})
+    position = {"网格_首笔股数": 200, "网格_首次买入价": 100.0, "网格_基准最高价": 120.0}
+    bar = {"前复权_最低": 0.01}
+
+    assert [
+        factor.加仓前检查({**position, "网格_已触发次数": level}, bar, {})["加仓股数"]
+        for level in range(4)
+    ] == [400, 600, 800, 1000]
+
+
 def test_lifecycle_budget_grid_allocates_l1_to_l4_and_stops():
     factor = 网格加仓({
         "最大加仓次数": 9,
@@ -87,7 +99,7 @@ def test_lifecycle_budget_grid_allocates_l1_to_l4_and_stops():
         "生命周期预算金额": 1_000_000,
         "生命周期预算比例": [0.25, 0.15, 0.20, 0.20, 0.20],
     })
-    position = {"网格_首笔股数": 2500, "网格_基准最高价": 100.0}
+    position = {"网格_首笔股数": 2500, "网格_首次买入价": 100.0, "网格_基准最高价": 120.0}
     bar = {"前复权_最低": 0.01}
 
     results = [
@@ -102,6 +114,7 @@ def test_lifecycle_budget_grid_allocates_l1_to_l4_and_stops():
 def test_same_bar_buy_rejects_when_high_does_not_reach_sentinel():
     executor = object.__new__(规则执行器)
     executor.买入时机模式 = "same_bar_entry"
+    executor.运行参数 = {}
     executor.买入溢价 = 1.0
     executor.上一根_不复权收盘 = 62.0
     executor.价格序列 = []
@@ -142,6 +155,10 @@ def make_executor():
     executor.哨兵价已确认可执行 = True
     executor.价格序列 = list(range(1, 17))
     executor.MA序列 = []
+    executor.过滤因子列表 = []
+    executor.过滤运行状态 = {}
+    executor.量价历史 = []
+    executor.运行参数 = {}
     executor.买入规则列表 = [{
         "类型": "RSI上穿20",
         "确认K线数": 0,
@@ -194,6 +211,7 @@ def test_real_rsi_30_cross_replaces_pending_ma_sentinel():
     current = make_bar(
         RSI_14=34.73,
         _上一根RSI=24.54,
+        RSI_均线_20=40.0,
         前复权_最高=36.05,
     )
 
@@ -243,7 +261,9 @@ def test_new_cross_can_create_lower_sentinel_than_previous_one():
     executor.上一根_最高价 = 17.0
     executor.价格序列 = list(range(1, 17))
 
-    current = make_bar(RSI_14=31.0, _上一根RSI=29.0, 前复权_最高=17.0)
+    current = make_bar(
+        RSI_14=31.0, _上一根RSI=29.0, RSI_均线_20=35.0, 前复权_最高=17.0
+    )
 
     with patch("策略引擎.规则执行器.计算RSI反推价", return_value={"RSI反推价": 16.0}):
         executor._计算哨兵价(current, 16)
@@ -251,6 +271,39 @@ def test_new_cross_can_create_lower_sentinel_than_previous_one():
     assert executor.哨兵价当前 == 17.0
     assert executor.RSI反推价当前 == 16.0
     assert executor.哨兵价形成类型 == "RSI上穿30"
+    assert executor.哨兵价本根新形成 is True
+
+
+def test_repeated_same_rsi_cross_rebuilds_sentinel_as_a_new_signal_event():
+    executor = make_executor()
+    executor.过滤因子列表 = []
+    executor.量价历史 = []
+    executor.哨兵价当前 = 130.0
+    executor.哨兵价已形成 = True
+    executor.哨兵价形成类型 = "RSI上穿20"
+    executor.买入规则列表 = [{"类型": "RSI上穿20"}]
+
+    with patch("策略引擎.规则执行器.计算RSI反推价", return_value={"RSI反推价": 110.0}):
+        executor._计算哨兵价(make_bar(RSI_14=21.0, _上一根RSI=20.0), 16)
+
+    assert executor.哨兵价当前 == 110.0
+    assert executor.哨兵价形成类型 == "RSI上穿20"
+    assert executor.哨兵价本根新形成 is True
+
+
+def test_rsi_ma_cross_uses_current_ma_for_current_rsi_comparison():
+    executor = make_executor()
+    executor.过滤因子列表 = []
+    executor.量价历史 = []
+    executor.上一根_RSI_MA = 30.0
+    executor.买入规则列表 = [{"类型": "RSI上穿均线"}]
+
+    with patch("策略引擎.规则执行器.计算RSI反推价", return_value={"RSI反推价": 110.0}):
+        executor._计算哨兵价(
+            make_bar(RSI_14=29.0, _上一根RSI=29.0, RSI_均线_20=28.5), 16
+        )
+
+    assert executor.哨兵价形成类型 == "RSI上穿均线"
     assert executor.哨兵价本根新形成 is True
 
 

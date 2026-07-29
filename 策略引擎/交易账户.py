@@ -88,6 +88,8 @@ class 股票账户视图:
             self.账户.最新价格[_规范股票代码(self.股票代码)] = price
 
     def 已达到最大持仓数(self, max_positions):
+        if int(max_positions) <= 0:
+            return False
         return (
             len(self.持仓) == 0
             and len(self.账户.持仓) >= int(max_positions)
@@ -104,19 +106,26 @@ class 股票账户视图:
         self.更新估值价(estimate_price)
         market_value = self.账户.持仓市值()
         equity = self.账户.现金 + market_value
-        single_limit = equity * float(max_single_ratio)
-        total_remaining = max(
-            0.0, equity * float(max_total_ratio) - market_value
-        )
         cash_available = max(
             0.0, self.账户.现金 - equity * float(cash_floor)
+        )
+        # 最大单只/总仓位比例设为 0 表示关闭对应限制；账户始终受真实
+        # 现金余额约束，不能透支。
+        single_limit_enabled = float(max_single_ratio) > 0
+        single_limit = equity * float(max_single_ratio) if single_limit_enabled else cash_available
+        total_limit_enabled = float(max_total_ratio) > 0
+        total_remaining = (
+            max(0.0, equity * float(max_total_ratio) - market_value)
+            if total_limit_enabled else cash_available
         )
         available = min(single_limit, total_remaining, cash_available)
         limits = {
             "当前权益": equity,
             "持仓市值": market_value,
             "单只结构性上限": single_limit,
+            "单只仓位限制已关闭": not single_limit_enabled,
             "总仓位剩余": total_remaining,
+            "总仓位限制已关闭": not total_limit_enabled,
             "现金可用金额": cash_available,
         }
         return available, limits

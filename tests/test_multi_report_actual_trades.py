@@ -32,12 +32,12 @@ def test_shared_account_report_populates_actual_trade_table(tmp_path):
     assert "实际买/卖" in page
     assert "mainSplitter" in page
     assert "analysisToggle" not in page
-    assert 'id="returnChartToggle">组合收益' in page
-    assert 'id="capitalChartToggle">资金使用' in page
-    assert 'id="returnChartPop"' in page
-    assert 'id="capitalChartPop"' in page
+    assert 'id="returnChartToggle"' not in page
+    assert 'id="capitalChartToggle"' not in page
+    assert 'id="returnChartPop"' not in page
+    assert 'id="capitalChartPop"' not in page
     assert '<section class="analysis">' not in page
     assert "回测时间：2020-01-01 至 2026-03-31" in page
-    assert "returnChartToggle').onclick" in page
-    assert "capitalChartToggle').onclick" in page
+    assert "returnChartToggle').onclick" not in page
+    assert "capitalChartToggle').onclick" not in page
     assert "document.querySelector('.analysis')" not in page

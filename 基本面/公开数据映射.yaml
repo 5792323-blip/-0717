@@ -1,0 +1,18 @@
+工作簿数据基准日: "2026-05-31"
+最大时效天数: 60
+公开宏观序列:
+  - 匹配词: "制造业PMI"
+    函数: macro_china_pmi_yearly
+    单位: "点"
+  - 匹配词: "M2增速"
+    函数: macro_china_m2_yearly
+    单位: "%"
+  - 匹配词: "出口金额增速"
+    函数: macro_china_exports_yoy
+    单位: "%YoY"
+  - 匹配词: "出口增速"
+    函数: macro_china_exports_yoy
+    单位: "%YoY"
+  - 匹配词: "PPI"
+    函数: macro_china_ppi_yearly
+    单位: "%YoY"

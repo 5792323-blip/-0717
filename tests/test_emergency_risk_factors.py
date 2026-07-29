@@ -21,7 +21,8 @@ def test_grid_risk_limits_are_opt_in():
         "网格_最近加仓索引": 0,
         "网格_已触发次数": 0,
         "网格_首笔股数": 100,
-        "网格_基准最高价": 100,
+        "网格_首次买入价": 100,
+        "网格_基准最高价": 120,
     }
     bar = {"前复权_最低": 90}
     factor = 网格加仓({"最大加仓次数": 2, "首次回撤阈值": 0.05})
@@ -34,7 +35,8 @@ def test_grid_risk_limits_block_short_interval_and_old_position():
         "网格_最近加仓索引": 0,
         "网格_已触发次数": 0,
         "网格_首笔股数": 100,
-        "网格_基准最高价": 100,
+        "网格_首次买入价": 100,
+        "网格_基准最高价": 120,
     }
     bar = {"前复权_最低": 90}
     factor = 网格加仓({
@@ -46,3 +48,22 @@ def test_grid_risk_limits_block_short_interval_and_old_position():
     })
     assert not factor.加仓前检查(position, bar, {"当前索引": 1})["触发加仓"]
     assert not factor.加仓前检查(position, bar, {"当前索引": 30})["触发加仓"]
+
+
+def test_grid_zero_risk_limits_mean_no_limit():
+    position = {
+        "买入时间": 0,
+        "网格_最近加仓索引": 0,
+        "网格_已触发次数": 0,
+        "网格_首笔股数": 100,
+        "网格_首次买入价": 100,
+        "网格_基准最高价": 120,
+    }
+    factor = 网格加仓({
+        "最大加仓次数": 2,
+        "首次回撤阈值": 0.05,
+        "启用风控限制": True,
+        "最小加仓间隔K线": 0,
+        "禁止加仓持仓K线数": 0,
+    })
+    assert factor.加仓前检查(position, {"前复权_最低": 90}, {"当前索引": 30})["触发加仓"]
