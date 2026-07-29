@@ -1462,7 +1462,7 @@ def 启动后台回测(form, mode):
         <a class="pill" href="{{ report_url }}" target="_blank">单独打开报告</a>
         {% endif %}
       </div>
-      <div id="backtestProgress" class="panel result-card progress-card" aria-live="polite">
+      <div id="backtestProgress" class="panel result-card progress-card {% if progress and progress.status != 'idle' %}active{% endif %}" aria-live="polite">
         <div class="progress-head">
           <span id="progressTitle" class="progress-title">回测进度</span>
           <span id="progressDetail" class="progress-detail">等待回测</span>
