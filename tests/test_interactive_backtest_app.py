@@ -107,6 +107,7 @@ def test_apply_form_updates_snapshot(tmp_path):
         "single_switch_核心模块_same_bar_entry": True,
         "single_switch_核心模块_next_bar_entry": False,
         "single_entry_timing": "same_bar_entry",
+        "single_sell_timing": "next_bar_open",
         "single_param_卖出规则_take_profit_第一目标": 0.06,
         "single_param_卖出规则_take_profit_第二目标": 0.12,
         "single_param_卖出规则_take_profit_第三目标": 0.24,
@@ -138,6 +139,7 @@ def test_apply_form_updates_snapshot(tmp_path):
     assert parameters["技术指标参数"]["信号过期K线数"] == 48
     assert parameters["卖出参数"]["分批止盈第三档"] == 0.24
     assert parameters["卖出参数"]["时间退出K线数"] == 50
+    assert parameters["卖出参数"]["卖出时机模式"] == "next_bar_open"
     atr_rule = next(item for item in exits["卖出条件列表"] if item["英文标识"] == "atr_trailing")
     time_rule = next(item for item in exits["卖出条件列表"] if item["英文标识"] == "time_exit")
     assert atr_rule["ATR倍数"] == 3.2

@@ -672,6 +672,45 @@ def test_intrabar_stop_uses_trigger_price_and_gap_down_open():
     assert recorded["卖出价"] == 79.92
 
 
+def test_next_bar_open_sell_executes_pending_order_at_current_open_once():
+    executor = make_executor()
+    executor.卖出时机模式 = "next_bar_open"
+    executor.滑点 = 0.001
+    executor.佣金率 = executor.印花税率 = executor.过户费率 = 0.0
+    executor.当前现金 = 0.0
+    executor.已买入K线数 = 2
+    executor.连续亏损次数 = executor.冷却期剩余K线 = 0
+    executor._行情不可交易 = lambda bar: False
+    executor._封死跌停 = lambda bar: False
+    executor.当前持仓 = {
+        "600519": {"买入时间": 0, "买入价": 100.0, "成本": 10000.0,
+                    "总成本": 10000.0, "股数": 100, "持仓组ID": "G1"}
+    }
+    executor.待次根开盘卖出 = {
+        "600519": {
+            "规则": {"说明": "上一根触发"}, "触发价": 90.0,
+            "卖出比例": 1.0, "盈亏比例": 0.0, "形成索引": 1,
+        }
+    }
+    recorded = {}
+    executor.交易记录器 = SimpleNamespace(
+        买入序号=1,
+        记录卖出=lambda **kwargs: recorded.update(kwargs),
+        更新交易记录=lambda *args, **kwargs: None,
+    )
+    executor.本根决策 = {"最终动作": "不交易", "动作原因": "", "决策记录": {"卖出": {}}}
+
+    assert executor._执行待次根开盘卖出(
+        make_bar(前复权_开盘=95.0, 不复权_开盘=95.0), 2
+    ) is True
+    assert recorded["卖出价"] == 94.91
+    assert executor.待次根开盘卖出 == {}
+    assert executor.当前持仓 == {}
+    assert executor._执行待次根开盘卖出(
+        make_bar(前复权_开盘=94.0, 不复权_开盘=94.0), 3
+    ) is False
+
+
 def test_strategy_exceptions_are_recorded_without_interrupting_execution():
     executor = object.__new__(规则执行器)
     executor.本根决策 = {}

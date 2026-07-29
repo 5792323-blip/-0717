@@ -1078,6 +1078,13 @@ def 启动后台回测(form, mode):
             <input type="number" step="0.0001" name="single_slippage" value="{{ form.single_slippage }}">
           </div>
           <div>
+            <label>卖出时机</label>
+            <select name="single_sell_timing">
+              <option value="intrabar_stop" {% if form.single_sell_timing == 'intrabar_stop' %}selected{% endif %}>本根触发后盘中成交</option>
+              <option value="next_bar_open" {% if form.single_sell_timing == 'next_bar_open' %}selected{% endif %}>下一根K线开盘卖出</option>
+            </select>
+          </div>
+          <div>
             <label>佣金</label>
             <input type="number" step="0.00001" name="single_commission" value="{{ form.single_commission }}">
           </div>
@@ -1299,6 +1306,13 @@ def 启动后台回测(form, mode):
           <div>
             <label>滑点</label>
             <input type="number" step="0.0001" name="multi_slippage" value="{{ form.multi_slippage }}">
+          </div>
+          <div>
+            <label>卖出时机</label>
+            <select name="multi_sell_timing">
+              <option value="intrabar_stop" {% if form.multi_sell_timing == 'intrabar_stop' %}selected{% endif %}>本根触发后盘中成交</option>
+              <option value="next_bar_open" {% if form.multi_sell_timing == 'next_bar_open' %}selected{% endif %}>下一根K线开盘卖出</option>
+            </select>
           </div>
           <div>
             <label>佣金</label>
@@ -2381,6 +2395,7 @@ def 构建默认表单():
         "grid_entry_timing": params["买入参数"].get(
             "网格加仓时机模式", "precomputed_stop_entry"
         ),
+        "sell_timing": params["卖出参数"].get("卖出时机模式", "intrabar_stop"),
         "rsi_ma_period": params["技术指标参数"]["RSI均线周期"],
         "atr_period": params["技术指标参数"]["ATR周期"],
         "buy_premium": params["交易成本"]["买入溢价"],
@@ -2604,6 +2619,13 @@ def 买入时机名称(value):
     }.get(value, str(value))
 
 
+def 卖出时机名称(value):
+    return {
+        "intrabar_stop": "本根触发后盘中成交",
+        "next_bar_open": "下一根K线开盘卖出",
+    }.get(value, str(value))
+
+
 def 规范化表单(form_data):
     defaults = 构建默认表单()
     if form_data.get("reset") == "1":
@@ -2617,6 +2639,7 @@ def 规范化表单(form_data):
         "single_rsi_price_source", "multi_rsi_price_source",
         "single_entry_timing", "multi_entry_timing",
         "single_grid_entry_timing", "multi_grid_entry_timing",
+        "single_sell_timing", "multi_sell_timing",
         "multi_portfolio_mode",
         "single_grid_mode", "multi_grid_mode",
     ]
@@ -2640,6 +2663,8 @@ def 规范化表单(form_data):
             "precomputed_stop_entry", "same_bar_entry",
         ):
             normalized[f"{prefix}_grid_entry_timing"] = defaults[f"{prefix}_grid_entry_timing"]
+        if normalized[f"{prefix}_sell_timing"] not in ("intrabar_stop", "next_bar_open"):
+            normalized[f"{prefix}_sell_timing"] = defaults[f"{prefix}_sell_timing"]
         if normalized[f"{prefix}_grid_mode"] not in (
                 "fixed_tranche", "linear", "multiplier", "lifecycle_budget"):
             normalized[f"{prefix}_grid_mode"] = defaults[f"{prefix}_grid_mode"]
@@ -2813,6 +2838,7 @@ def 应用表单到配置(config_dir, form):
     parameters["买入参数"]["买入时机模式"] = form["entry_timing"]
     parameters["买入参数"]["首次开仓时机模式"] = form["entry_timing"]
     parameters["买入参数"]["网格加仓时机模式"] = form["grid_entry_timing"]
+    parameters["卖出参数"]["卖出时机模式"] = form["sell_timing"]
     parameters["技术指标参数"]["RSI均线周期"] = form["rsi_ma_period"]
     parameters["技术指标参数"]["ATR周期"] = form["atr_period"]
     parameters["技术指标参数"]["信号过期K线数"] = form["signal_expiry_bars"]
@@ -3007,6 +3033,7 @@ def 提取模式配置(form, prefix):
         "rsi_price_source": form[f"{strategy_prefix}_rsi_price_source"],
         "entry_timing": form[f"{strategy_prefix}_entry_timing"],
         "grid_entry_timing": form[f"{strategy_prefix}_grid_entry_timing"],
+        "sell_timing": form[f"{strategy_prefix}_sell_timing"],
         "rsi_ma_period": form[f"{strategy_prefix}_rsi_ma_period"],
         "atr_period": form[f"{strategy_prefix}_atr_period"],
         "buy_premium": form[f"{strategy_prefix}_buy_premium"],
@@ -3433,6 +3460,7 @@ def 运行交互回测(form, progress=None):
                 {"label": "RSI价格源", "value": {"high": "最高价", "close": "收盘价", "low": "最低价"}.get(form["rsi_price_source"], form["rsi_price_source"])},
                 {"label": "首次开仓时机", "value": 买入时机名称(form["entry_timing"])},
                 {"label": "网格加仓时机", "value": 买入时机名称(form["grid_entry_timing"])},
+                {"label": "卖出时机", "value": 卖出时机名称(form["sell_timing"])},
                 {"label": "时序审计", "value": result.get("时序审计", {}).get("结论", "--")},
                 {"label": "初始资金", "value": 格式化金额(form["capital"])},
                 {"label": "总收益率", "value": 格式化百分比(result.get("总收益率", 0))},
@@ -3997,6 +4025,7 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
                 {"label": "RSI价格源", "value": {"high": "最高价", "close": "收盘价", "low": "最低价"}.get(form["rsi_price_source"], form["rsi_price_source"])},
                 {"label": "首次开仓时机", "value": 买入时机名称(form["entry_timing"])},
                 {"label": "网格加仓时机", "value": 买入时机名称(form["grid_entry_timing"])},
+                {"label": "卖出时机", "value": 卖出时机名称(form["sell_timing"])},
                 {"label": "买入总数", "value": str(summary.get("买入总数", 0))},
                 {"label": "卖出总数", "value": str(summary.get("卖出总数", 0))},
                 {"label": "总成交笔数", "value": str(summary.get("总交易数", 0))},

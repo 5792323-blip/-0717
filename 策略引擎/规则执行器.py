@@ -285,6 +285,7 @@ class 规则执行器:
         self.过户费率 = float(成本.get('过户费', 0.00001))
         技术参数 = self.参数配置.get('技术指标参数', {})
         买入参数 = self.参数配置.get('买入参数', {})
+        卖出参数 = self.参数配置.get('卖出参数', {})
         self.RSI价格源 = str(技术参数.get('RSI价格源', 'close'))
         self.信号过期K线数 = int(技术参数.get('信号过期K线数', 72))
         self.哨兵价本根形成立即买入 = bool(技术参数.get('哨兵价本根形成立即买入', True))
@@ -307,6 +308,14 @@ class 规则执行器:
         # 旧代码路径继续读取这个字段；它现在明确代表首次开仓时机。
         self.买入时机模式 = self.首次开仓时机模式
         self.待次根开盘买入 = None
+        self.卖出时机模式 = str(
+            self.运行参数.get(
+                '卖出时机模式', 卖出参数.get('卖出时机模式', 'intrabar_stop')
+            )
+        )
+        if self.卖出时机模式 not in ('intrabar_stop', 'next_bar_open'):
+            self.卖出时机模式 = 'intrabar_stop'
+        self.待次根开盘卖出 = {}
         # 同一根K线只允许一次普通买入；跨K线可继续增持同一股票。
         self._本根已买入股票 = set()
         
@@ -816,6 +825,7 @@ class 规则执行器:
         self.哨兵价本根新形成 = False
         本根触发哨兵价 = self.哨兵价当前
         self._本根触发哨兵价 = 本根触发哨兵价
+        self._执行待次根开盘卖出(K线数据, 当前索引)
         允许下一根执行 = self._核心模块启用('下一根执行', True)
         待买入已成交 = (
             self._执行待次根开盘买入(K线数据, 当前索引)
@@ -927,6 +937,8 @@ class 规则执行器:
             哨兵价已消费价格=getattr(self, '哨兵价已消费价格', None),
             最近成交哨兵价=getattr(self, '最近成交哨兵价', None),
             策略异常=self.本根决策.get("策略异常", []),
+            卖出时机模式=self.卖出时机模式,
+            待次根开盘卖出=list(self.待次根开盘卖出.keys()),
             本根反推价=self.本根反推价,
             本根反推信号类型=self.本根反推信号类型,
             本根反推目标RSI=self.本根反推目标RSI,
@@ -1257,6 +1269,38 @@ class 规则执行器:
             )
             self.本根决策["决策记录"]["买入"]["结果"] = "未成交"
    
+    def _执行待次根开盘卖出(self, K线数据, 当前索引):
+        """执行上一根收盘后确认的卖出订单；成交价只取本根开盘价。"""
+        if self.卖出时机模式 != 'next_bar_open' or not self.待次根开盘卖出:
+            return False
+        已执行 = False
+        待处理 = list(self.待次根开盘卖出.items())
+        for 股票代码, 待单 in 待处理:
+            持仓 = self.当前持仓.get(股票代码)
+            if not 持仓:
+                self.待次根开盘卖出.pop(股票代码, None)
+                continue
+            if self._行情不可交易(K线数据) or self._封死跌停(K线数据):
+                continue
+            规则 = 待单.get('规则') or {'说明': '上一根触发，本根开盘卖出'}
+            成交 = self._执行卖出(
+                持仓, 规则, float(待单.get('盈亏比例', 0.0) or 0.0),
+                K线数据, 触发价=None, 股票代码=股票代码,
+                卖出比例=待单.get('卖出比例', 1.0),
+            )
+            if not 成交:
+                continue
+            self.待次根开盘卖出.pop(股票代码, None)
+            self.本根决策['最终动作'] = '卖出'
+            self.本根决策['动作原因'] = '上一根触发，本根开盘执行'
+            self.本根决策.setdefault('决策记录', {}).setdefault('卖出', {}).update({
+                '结果': '成交',
+                '执行方式': '下一根K线开盘',
+                '原触发价': 待单.get('触发价'),
+            })
+            已执行 = True
+        return 已执行
+
     def _执行待次根开盘买入(self, K线数据, 当前索引):
         """将上一根收盘确认的信号在本根开盘执行。"""
         待买 = self.待次根开盘买入
@@ -1888,6 +1932,10 @@ class 规则执行器:
     
     def _检查卖出(self, 持仓, K线数据, 当前索引, 股票_code=None):
         """检查持仓是否需要卖出"""
+        if (getattr(self, '卖出时机模式', 'intrabar_stop') == 'next_bar_open'
+                and 股票_code in getattr(self, '待次根开盘卖出', {})):
+            self.本根决策['动作原因'] = '已有待卖单，等待下一根K线开盘执行'
+            return
         if self._行情不可交易(K线数据):
             self.本根决策["动作原因"] = "行情缺失、停牌或无成交量，跳过卖出"
             return
@@ -2087,6 +2135,24 @@ class 规则执行器:
                 except (TypeError, ValueError, ZeroDivisionError):
                     continue
             
+            if self.卖出时机模式 == 'next_bar_open':
+                self.待次根开盘卖出[股票_code] = {
+                    '规则': 规则,
+                    '触发价': 触发价,
+                    '卖出比例': 结果.get('卖出比例', 1.0),
+                    '盈亏比例': 盈亏比例,
+                    '形成索引': 当前索引,
+                }
+                self.本根决策['最终动作'] = '待卖出'
+                self.本根决策['动作原因'] = '本根触发，下一根K线开盘执行'
+                self.本根决策['决策记录']['阶段'] = '卖出待执行'
+                self.本根决策['决策记录']['卖出'].update({
+                    '结果': '待成交',
+                    '执行方式': '下一根K线开盘',
+                    '执行触发价': 触发价,
+                })
+                break
+
             # 执行卖出（用触发价-滑点成交）
             已卖出 = self._执行卖出(
                 持仓, 规则, 盈亏比例, K线数据,
@@ -2585,6 +2651,7 @@ class 规则执行器:
             "剩余持仓": len(self.当前持仓),
             "策略异常记录": list(getattr(self, "策略异常记录", [])),
             "策略异常计数": dict(getattr(self, "策略异常计数", {})),
+            "卖出时机模式": self.卖出时机模式,
         }
 
 
