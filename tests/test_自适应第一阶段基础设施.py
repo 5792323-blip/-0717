@@ -19,6 +19,7 @@ from 自适应基础设施.市场评分.评估报告 import 生成评估报告
 from 自适应基础设施.Alpha排序.Alpha排序 import Alpha排序器
 from 自适应基础设施.Alpha排序.诊断 import 诊断排序
 from 自适应基础设施.Alpha排序.评估报告 import 生成评估报告 as 生成Alpha评估报告
+from 自适应基础设施.Alpha排序.独立实验 import 评估入场, 生成对照标签
 from 自适应基础设施.市场评分.Active归因 import 生成Active归因
 
 
@@ -308,6 +309,18 @@ def test_Alpha排序评估报告():
         {"排名": [{"Alpha评分": 0.8}], "候选股票": ["A"]},
     ])
     assert report["结论"] == "建议进入Alpha+RSI哨兵独立实验"
+
+
+def test_Alpha独立实验必须同时满足三层条件且不产生交易事实():
+    ranking = {"候选股票": ["A"]}
+    sentinel = {"满足": True, "最终买入触发价": 10.0}
+    passed = 评估入场(ranking, "A", True, sentinel)
+    blocked = 评估入场(ranking, "B", True, sentinel)
+    assert passed["通过"] is True
+    assert blocked["通过"] is False
+    assert blocked["原因"] == "不在Alpha候选"
+    assert 生成对照标签(False) == "RSI哨兵基线"
+    assert 生成对照标签(True) == "Alpha+RSI哨兵实验"
 
 
 def test_Active实验归因报告():
