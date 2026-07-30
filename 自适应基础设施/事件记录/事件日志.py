@@ -15,6 +15,7 @@ from datetime import datetime
     "审批对账": "审批对账.jsonl",
     "事件时钟对账": "事件时钟对账.jsonl",
     "市场评分": "市场评分.jsonl",
+    "Alpha排序": "Alpha排序.jsonl",
     "账户变化": "账户变化.jsonl",
     "守恒检查": "守恒检查.jsonl",
     "错误记录": "错误记录.jsonl",

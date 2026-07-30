@@ -145,6 +145,7 @@ def 运行共享账户回测(
     事件时钟模式=None,
     市场评分Shadow=False,
     市场评分Active=False,
+    Alpha排序Shadow=False,
 ):
     """在一个共享账户中运行回测；新审批器目前只允许旁路观察。"""
     if 审批模式 is None:
@@ -230,12 +231,18 @@ def 运行共享账户回测(
     timestamps = sorted(timeline)
     market_score_count = 0
     market_score_valid = 0
+    alpha_rank_count = 0
+    alpha_rank_valid = 0
     market_states = {}
     market_scorer = None
     if 市场评分Shadow:
         from 自适应基础设施.市场评分.市场评分 import 市场评分器
         market_path = os.path.join(default_root, "数据模块", "大盘数据", "hs300_日K线.pkl")
         market_scorer = 市场评分器(market_path, [session["数据"] for session in sessions.values()])
+    alpha_ranker = None
+    if Alpha排序Shadow:
+        from 自适应基础设施.Alpha排序.Alpha排序 import Alpha排序器
+        alpha_ranker = Alpha排序器(list(sessions.values()))
     actual_buys = actual_sells = rejected_orders = partial_fills = 0
     rejection_reasons = Counter()
     rejection_categories = Counter()
@@ -291,6 +298,12 @@ def 运行共享账户回测(
             if audit_log:
                 audit_log.记录("市场评分", market_result,
                                timestamp.strftime("%Y-%m-%d %H:%M"), "")
+        if alpha_ranker is not None:
+            alpha_result = alpha_ranker.计算(timestamp)
+            alpha_rank_count += 1
+            alpha_rank_valid += int(alpha_result.get("有效股票数", 0) > 0)
+            if audit_log:
+                audit_log.记录("Alpha排序", alpha_result, timestamp.strftime("%Y-%m-%d %H:%M"), "")
         clock_approval_start = len(account.审批记录)
         # 开盘时所有股票价格均已知；组合审批不能读取本根收盘价。
         for session, _, row in entries:
@@ -507,6 +520,9 @@ def 运行共享账户回测(
         "市场评分日数": market_score_count,
         "市场评分有效日数": market_score_valid,
         "市场状态分布": market_states,
+        "Alpha排序Shadow": bool(Alpha排序Shadow),
+        "Alpha排序日数": alpha_rank_count,
+        "Alpha排序有效日数": alpha_rank_valid,
     }
     return {
         "账户": account,

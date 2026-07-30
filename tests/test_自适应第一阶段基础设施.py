@@ -16,6 +16,7 @@ from 自适应基础设施.市场评分.市场评分 import 市场评分器
 from 自适应基础设施.市场评分.诊断 import 诊断状态
 from 自适应基础设施.市场评分.归因 import 状态归因
 from 自适应基础设施.市场评分.评估报告 import 生成评估报告
+from 自适应基础设施.Alpha排序.Alpha排序 import Alpha排序器
 from 自适应基础设施.市场评分.Active归因 import 生成Active归因
 
 
@@ -278,6 +279,15 @@ def test_状态诊断忽略历史不足记录():
     ])
     assert result["有效状态数"] == 2
     assert result["状态切换次数"] == 0
+
+
+def test_Alpha排序只使用生效日前数据():
+    import pandas as pd
+    dates = pd.date_range("2020-01-01", periods=130)
+    data = pd.DataFrame({"日期": dates.strftime("%Y-%m-%d"), "不复权_收盘": range(100, 230), "成交额": [1000] * 130, "ATR_14": [1.0] * 130})
+    result = Alpha排序器([{"股票代码": "600519", "数据": data}]).计算("2020-01-30")
+    assert result["生效日期"] == "2020-01-30"
+    assert result["有效股票数"] == 0
 
 
 def test_Active实验归因报告():
