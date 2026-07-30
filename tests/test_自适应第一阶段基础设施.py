@@ -16,6 +16,7 @@ from 自适应基础设施.市场评分.市场评分 import 市场评分器
 from 自适应基础设施.市场评分.诊断 import 诊断状态
 from 自适应基础设施.市场评分.归因 import 状态归因
 from 自适应基础设施.市场评分.评估报告 import 生成评估报告
+from 自适应基础设施.市场评分.Active归因 import 生成Active归因
 
 
 class _假记录器:
@@ -277,3 +278,13 @@ def test_状态诊断忽略历史不足记录():
     ])
     assert result["有效状态数"] == 2
     assert result["状态切换次数"] == 0
+
+
+def test_Active实验归因报告():
+    base = {"live": {"实际成交": 10, "实际买入": 5, "实际卖出": 5, "当前权益": 100.0, "最大回撤": 0.2}, "组合权益曲线": [1]}
+    shadow = {"live": {"实际成交": 10, "当前权益": 100.0, "Shadow未解释差异": 0}, "组合权益曲线": [1]}
+    active = {"live": {"实际成交": 8, "实际买入": 4, "实际卖出": 4, "当前权益": 105.0, "最大回撤": 0.1}, "组合权益曲线": [1]}
+    result = 生成Active归因(base, shadow, active)
+    assert result["基线与Shadow结果一致"] is True
+    assert result["Active相对基线"]["成交变化"] == -2
+    assert result["Active相对基线"]["最终权益变化"] == 5.0
