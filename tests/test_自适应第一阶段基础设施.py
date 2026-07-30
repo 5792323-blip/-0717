@@ -12,6 +12,7 @@ from 自适应基础设施.数据结构.接口 import 成交结果, 转为字典
 from 自适应基础设施.旧系统适配.旧执行器适配器 import 旧执行器适配器
 from 自适应基础设施.组合审批.审批适配器 import 影子对账
 from 自适应基础设施.事件记录.事件时钟 import 比较事件顺序
+from 自适应基础设施.市场评分.市场评分 import 市场评分器
 
 
 class _假记录器:
@@ -182,3 +183,20 @@ def test_目标事件时钟只比较顺序不修改记录():
     assert result["是否混合买卖"] is True
     assert result["买入数量"] == 2
     assert result["卖出数量"] == 1
+
+
+def test_市场评分只使用生效日前数据(tmp_path):
+    import pandas as pd
+    index = pd.DataFrame({
+        "date": pd.date_range("2020-01-01", periods=130),
+        "close": [100.0 + i for i in range(130)],
+    })
+    path = tmp_path / "index.pkl"
+    index.to_pickle(path)
+    stock = pd.DataFrame({
+        "日期": index["date"].dt.strftime("%Y-%m-%d"),
+        "不复权_收盘": index["close"],
+    })
+    result = 市场评分器(str(path), [stock]).计算("2020-05-10")
+    assert result["生效日期"] == "2020-05-10"
+    assert result["指数日期"] < result["生效日期"]

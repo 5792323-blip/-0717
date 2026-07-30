@@ -143,6 +143,7 @@ def 运行共享账户回测(
     approval_shadow=False,
     审批模式=None,
     事件时钟模式=None,
+    市场评分Shadow=False,
 ):
     """在一个共享账户中运行回测；新审批器目前只允许旁路观察。"""
     if 审批模式 is None:
@@ -224,6 +225,14 @@ def 运行共享账户回测(
 
     curve = []
     timestamps = sorted(timeline)
+    market_score_count = 0
+    market_score_valid = 0
+    market_states = {}
+    market_scorer = None
+    if 市场评分Shadow:
+        from 自适应基础设施.市场评分.市场评分 import 市场评分器
+        market_path = os.path.join(default_root, "数据模块", "大盘数据", "hs300_日K线.pkl")
+        market_scorer = 市场评分器(market_path, [session["数据"] for session in sessions.values()])
     actual_buys = actual_sells = rejected_orders = partial_fills = 0
     rejection_reasons = Counter()
     rejection_categories = Counter()
@@ -268,6 +277,17 @@ def 运行共享账户回测(
             stopped = True
             break
         entries = timeline[timestamp]
+        if market_scorer is not None:
+            market_result = market_scorer.计算(timestamp)
+            market_score_count += 1
+            if market_result.get("有效"):
+                market_score_valid += 1
+            market_states[market_result.get("状态", "历史不足")] = market_states.get(
+                market_result.get("状态", "历史不足"), 0
+            ) + 1
+            if audit_log:
+                audit_log.记录("市场评分", market_result,
+                               timestamp.strftime("%Y-%m-%d %H:%M"), "")
         clock_approval_start = len(account.审批记录)
         # 开盘时所有股票价格均已知；组合审批不能读取本根收盘价。
         for session, _, row in entries:
@@ -476,6 +496,10 @@ def 运行共享账户回测(
         "事件时钟对账日数": clock_days,
         "事件时钟需调整日数": clock_reordered_days,
         "事件时钟混合买卖日数": clock_mixed_days,
+        "市场评分Shadow": bool(市场评分Shadow),
+        "市场评分日数": market_score_count,
+        "市场评分有效日数": market_score_valid,
+        "市场状态分布": market_states,
     }
     return {
         "账户": account,
