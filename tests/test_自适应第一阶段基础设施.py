@@ -115,3 +115,39 @@ def test_旧审批映射与Shadow对账不改变审批事实():
     assert approval.approved_budget == 1000.0
     assert reconciliation.explained is True
     assert reconciliation.difference_type is None
+
+
+def test_多股共享账户Shadow审批映射保持正式结果(tmp_path):
+    import contextlib
+    import io
+    import os
+    from 组合回测.统一多股执行器 import 运行共享账户回测
+
+    config_dir = os.path.abspath("1_策略配置")
+    options = {
+        "stocks": ["600519", "000001", "300059"],
+        "start": "2020-01-01",
+        "end": "2020-12-31",
+        "capital": 2000000,
+        "config_dir": config_dir,
+        "allow_partial_fill": True,
+    }
+    with contextlib.redirect_stdout(io.StringIO()):
+        baseline = 运行共享账户回测(**options)
+        shadow = 运行共享账户回测(
+            **options,
+            audit_run_id="test-phase2-multi",
+            audit_log_root=str(tmp_path),
+            approval_shadow=True,
+        )
+    assert baseline["live"]["实际成交"] == shadow["live"]["实际成交"]
+    assert baseline["live"]["当前权益"] == shadow["live"]["当前权益"]
+    assert baseline["组合权益曲线"] == shadow["组合权益曲线"]
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "test-phase2-multi" / "审批对账.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert rows
+    assert all(row["payload"]["explained"] for row in rows)
