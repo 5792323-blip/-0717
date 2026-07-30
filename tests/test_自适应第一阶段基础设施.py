@@ -1,5 +1,7 @@
 import json
 
+import pandas as pd
+
 from 自适应基础设施.事件记录.事件日志 import 事件日志
 from 自适应基础设施.事件记录.基线指纹 import 结果指纹
 from 自适应基础设施.标识管理.事件编号 import 生成编号
@@ -21,6 +23,7 @@ from 自适应基础设施.Alpha排序.诊断 import 诊断排序
 from 自适应基础设施.Alpha排序.评估报告 import 生成评估报告 as 生成Alpha评估报告
 from 自适应基础设施.Alpha排序.独立实验 import 评估入场, 生成对照标签
 from 自适应基础设施.市场评分.Active归因 import 生成Active归因
+from 运行程序.run_backtest import 为交易证据添加股票范围编号
 
 
 class _假记录器:
@@ -321,6 +324,14 @@ def test_Alpha独立实验必须同时满足三层条件且不产生交易事实
     assert blocked["原因"] == "不在Alpha候选"
     assert 生成对照标签(False) == "RSI哨兵基线"
     assert 生成对照标签(True) == "Alpha+RSI哨兵实验"
+
+
+def test_多股交易证据编号包含股票范围():
+    frame = pd.DataFrame([{"intent_id": "I00000001", "order_id": "O00000001", "execution_id": "X00000001"}])
+    left = 为交易证据添加股票范围编号(frame, "600519")
+    right = 为交易证据添加股票范围编号(frame, "000001")
+    assert left.iloc[0]["execution_id"] != right.iloc[0]["execution_id"]
+    assert left.iloc[0]["execution_id"] == "600519:X00000001"
 
 
 def test_Active实验归因报告():

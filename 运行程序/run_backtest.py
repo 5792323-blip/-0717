@@ -8,12 +8,27 @@ import json
 import math
 import os
 import sys
+from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor
 from datetime import date
 
 import pandas as pd
 
 项目根目录 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def 为交易证据添加股票范围编号(trades, stock):
+    """为多股证据编号增加股票范围，避免各执行器从 1 重新编号。"""
+    frame = trades.copy()
+    stock = str(stock)
+    if "股票代码" not in frame:
+        frame.insert(0, "股票代码", stock)
+    for field in ("intent_id", "order_id", "execution_id"):
+        if field in frame:
+            frame[field] = frame[field].map(
+                lambda value: f"{stock}:{value}" if str(value).strip() else value
+            )
+    return frame
 sys.path.insert(0, 项目根目录)
 
 from 数据模块.股票名称 import 获取股票名称
@@ -307,6 +322,44 @@ def main():
         "股票明细": details,
     }
     payload = json.dumps(report, ensure_ascii=False, indent=2)
+    # 命令行入口与页面入口使用同一证据目录契约。
+    if args.output:
+        evidence_dir = os.path.splitext(os.path.abspath(args.output))[0] + "_运行"
+    else:
+        evidence_dir = os.path.join(
+            项目根目录, "10_实验记录",
+            "命令行回测_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
+        )
+    os.makedirs(evidence_dir, exist_ok=True)
+    manifest = {
+        "schema_version": "1.0", "run_id": os.path.basename(evidence_dir),
+        "run_type": "CLI_BACKTEST", "status": "COMPLETED",
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "start_date": args.start, "end_date": args.end, "stocks": stocks,
+        "stock_count": len(stocks), "account_mode": report["资金模式"],
+        "capital": args.capital, "config_dir": config_dir,
+        "save_level": "STANDARD_AUDIT", "locked": False,
+    }
+    with open(os.path.join(evidence_dir, "运行清单.json"), "w", encoding="utf-8") as target:
+        json.dump(manifest, target, ensure_ascii=False, indent=2)
+    with open(os.path.join(evidence_dir, "回测结果.json"), "w", encoding="utf-8") as target:
+        target.write(payload)
+    # 保存交易证据，审计不依赖页面重新推算。
+    trade_frames = []
+    for item in (shared.get("股票结果", []) if args.portfolio_mode == "shared" else []):
+        trades = item.get("交易明细")
+        if trades is not None and len(trades):
+            trade_frames.append(为交易证据添加股票范围编号(trades, item.get("股票代码", "")))
+    if trade_frames:
+        pd.concat(trade_frames, ignore_index=True).to_csv(
+            os.path.join(evidence_dir, "交易明细.csv"), index=False
+        )
+    from 运行程序.可信度审计 import 审计运行目录
+    credibility = 审计运行目录(evidence_dir)
+    manifest["credibility_status"] = credibility["overall_status"]
+    manifest["can_be_baseline"] = credibility["can_be_baseline"]
+    with open(os.path.join(evidence_dir, "运行清单.json"), "w", encoding="utf-8") as target:
+        json.dump(manifest, target, ensure_ascii=False, indent=2)
     if args.output:
         os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
         with open(args.output, "w", encoding="utf-8") as target:

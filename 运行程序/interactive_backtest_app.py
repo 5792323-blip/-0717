@@ -1513,6 +1513,12 @@ def 启动后台回测(form, mode):
           </div>
         </details>
         <div id="progressActions" class="progress-actions"></div>
+        <div id="lifecycleActions" class="progress-actions" hidden>
+          <button type="button" class="secondary" data-lifecycle="lock">锁定结果</button>
+          <button type="button" class="secondary" data-lifecycle="unlock">解锁结果</button>
+          <button type="button" class="secondary" data-lifecycle="clean">清理可重建深度数据</button>
+          <span id="lifecycleStatus" class="progress-detail"></span>
+        </div>
         <div id="progressError" class="progress-error" hidden></div>
       </div>
 
@@ -2168,6 +2174,28 @@ def 启动后台回测(form, mode):
         // 明细接口暂不可用时，不影响主进度显示。
       }
     }
+    async function refreshLifecycle() {
+      const box = document.getElementById('lifecycleActions');
+      if (!box) return;
+      try {
+        const response = await fetch('/api/run-lifecycle', {cache: 'no-store'});
+        if (!response.ok) { box.hidden = true; return; }
+        const state = await response.json();
+        box.hidden = false;
+        box.querySelector('[data-lifecycle="lock"]').disabled = !!state.locked;
+        box.querySelector('[data-lifecycle="unlock"]').disabled = !state.locked;
+        document.getElementById('lifecycleStatus').textContent = `${state.locked ? '已锁定' : '未锁定'} · ${state.文件数 || 0} 个文件`;
+      } catch (error) { box.hidden = true; }
+    }
+    document.querySelectorAll('[data-lifecycle]').forEach(button => button.addEventListener('click', async () => {
+      const action = button.dataset.lifecycle;
+      const confirm = action === 'clean' ? window.confirm('确认清理可重建深度数据？核心证据文件不会删除。') : true;
+      if (!confirm) return;
+      const response = await fetch('/api/run-lifecycle', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({action, confirm})});
+      const payload = await response.json();
+      if (!response.ok) window.alert(payload.message || '操作失败');
+      await refreshLifecycle();
+    }));
     async function pollProgress() {
       try {
         const response = await fetch('/api/backtest-progress', {cache: 'no-store'});
@@ -2185,6 +2213,7 @@ def 启动后台回测(form, mode):
       }
     }
     renderProgress(progressInitial);
+    refreshLifecycle();
     pollRejections();
     syncBenchmarkChoice(activeBenchmark);
     pollReturnCurve();
@@ -2886,6 +2915,11 @@ def 更新运行清单(run_dir, **changes):
         json.dump(payload, target, ensure_ascii=False, indent=2)
 
 
+def 生成可信度审计(run_dir):
+    from 运行程序.可信度审计 import 审计运行目录
+    return 审计运行目录(run_dir)
+
+
 def 清理旧交互回测数据():
     """清理旧的交互回测结果，不触碰行情、配置和数据备份。"""
     if not os.path.isdir(实验记录目录):
@@ -3536,6 +3570,15 @@ def 初始化结果():
     }
 
 
+def 读取可信度摘要(run_dir):
+    try:
+        with open(os.path.join(run_dir or "", "可信度审计.json"), encoding="utf-8") as source:
+            payload = json.load(source)
+        return payload.get("overall_status", "--"), payload.get("can_be_baseline", False)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return "--", False
+
+
 def 运行交互回测(form, progress=None):
     form = 归一化单股满仓参数(提取模式配置(form, "single"))
     stock = form["stock"]
@@ -3566,7 +3609,14 @@ def 运行交互回测(form, progress=None):
     保存结果(result, 输出目录=run_dir)
     report_path = os.path.join(run_dir, "交互回测报告.html")
     生成报告(result, result.get("原始K线数据"), 输出路径=report_path)
-    更新运行清单(run_dir, status="COMPLETED", finished_at=datetime.now().isoformat(timespec="seconds"))
+    credibility = 生成可信度审计(run_dir)
+    更新运行清单(
+        run_dir,
+        status="COMPLETED",
+        finished_at=datetime.now().isoformat(timespec="seconds"),
+        credibility_status=credibility.get("overall_status"),
+        credibility_report="可信度审计.json",
+    )
     token = uuid.uuid4().hex
     最近报告.update({"token": token, "path": report_path, "run_dir": run_dir})
     buys = int(result.get("买入次数", 0))
@@ -3627,6 +3677,7 @@ def 运行交互回测(form, progress=None):
                 {"label": "胜率", "value": f"{float(result.get('胜率', 0)):.2f}%"},
                 {"label": "买入次数", "value": str(buys)},
                 {"label": "卖出次数", "value": str(sells)},
+                {"label": "可信度审计", "value": credibility.get("overall_status", "--")},
             ],
             "note": (
                 "这次没有任何成交，所以收益率会显示 0.00%。常见原因是：最大单只比例设得过低，或买入规则被全部关闭。"
@@ -4132,7 +4183,14 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
     multi_token = uuid.uuid4().hex
     multi_report_path = os.path.join(run_dir, "多股策略决策回放.html")
     生成多股策略回放页面(multi_report_path, multi_token, run_dir, details, summary, form, 组合曲线)
-    更新运行清单(run_dir, status="COMPLETED", finished_at=datetime.now().isoformat(timespec="seconds"))
+    credibility = 生成可信度审计(run_dir)
+    更新运行清单(
+        run_dir,
+        status="COMPLETED",
+        finished_at=datetime.now().isoformat(timespec="seconds"),
+        credibility_status=credibility.get("overall_status"),
+        credibility_report="可信度审计.json",
+    )
     最近多股报告.update({"token": multi_token, "path": multi_report_path, "run_dir": run_dir})
     基准指标 = 提取组合基准指标(
         组合曲线,
@@ -4412,6 +4470,9 @@ def 首页():
                 ],
                 "note": "多股回测结果已写入组合回放和各股票决策回放。",
             }
+            status, can_baseline = 读取可信度摘要(result["run_dir"])
+            result["backtest_result"]["rows"].append({"label": "可信度审计", "value": status})
+            result["backtest_result"]["rows"].append({"label": "可作为基线", "value": "是" if can_baseline else "否"})
         except (OSError, ValueError, json.JSONDecodeError):
             result["status"] = "多股回测已完成，但汇总文件暂不可读。"
     elif 最近报告["token"]:
@@ -4439,6 +4500,9 @@ def 首页():
             ],
             "note": "当前单票回放与最新报告均直接读取此回测目录的同一份报告。",
         }
+        status, can_baseline = 读取可信度摘要(result["run_dir"])
+        result["backtest_result"]["rows"].append({"label": "可信度审计", "value": status})
+        result["backtest_result"]["rows"].append({"label": "可作为基线", "value": "是" if can_baseline else "否"})
         # 页面重启后仍尽量恢复最近一次的成交诊断（CSV 是持仓过程的持久快照）。
         process_path = os.path.join(最近报告["run_dir"] or "", "持仓过程.csv")
         try:
@@ -4496,6 +4560,29 @@ def 首页():
 @应用.route("/api/backtest-progress")
 def 回测进度接口():
     return jsonify(读取回测进度())
+
+
+@应用.route("/api/run-lifecycle", methods=["GET", "POST"])
+def 运行生命周期接口():
+    run_dir = 读取回测进度().get("run_dir")
+    if not run_dir:
+        return jsonify({"ok": False, "message": "当前没有结果目录。"}), 404
+    from 运行程序.结果生命周期 import 目录状态, 锁定, 解锁, 清理可重建深度数据
+    try:
+        if request.method == "GET":
+            return jsonify({"ok": True, **目录状态(run_dir)})
+        action = str((request.get_json(silent=True) or {}).get("action", ""))
+        if action == "lock":
+            return jsonify({"ok": True, "manifest": 锁定(run_dir)})
+        if action == "unlock":
+            return jsonify({"ok": True, "manifest": 解锁(run_dir)})
+        if action == "clean":
+            return jsonify({"ok": True, **清理可重建深度数据(
+                run_dir, confirm=bool((request.get_json(silent=True) or {}).get("confirm"))
+            )})
+        return jsonify({"ok": False, "message": "不支持的操作。"}), 400
+    except (ValueError, PermissionError, OSError) as error:
+        return jsonify({"ok": False, "message": str(error)}), 409
 
 
 @应用.route("/api/backtest-live")

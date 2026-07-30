@@ -235,7 +235,9 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
                 # 反推价计算
                 i = len(k线记录)
                 _是买入K线 = d['完整时间'] in _买入时间映射
-                if i >= 14 and rsi_ma_values is not None and (rsi_ma_values[i-1] is None or (not np.isnan(rsi_ma_values[i-1]))):
+                # 有真实持仓过程时，报告只消费执行器字段，不再重复反推。
+                _允许报告兜底重算 = i not in 真实K线状态查询
+                if _允许报告兜底重算 and i >= 14 and rsi_ma_values is not None and (rsi_ma_values[i-1] is None or (not np.isnan(rsi_ma_values[i-1]))):
                    if _是买入K线 and i >= 15:
                        前窗口 = prices[i-15:i]
                        if not np.any(np.isnan(前窗口)):
@@ -322,7 +324,7 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
                     elif _前RSI < 70 and _当前RSI >= 70:
                         _上穿阈值 = 70
                 _本根哨兵价说明 = None
-                if _上穿阈值 is not None and i >= 14:
+                if _允许报告兜底重算 and _上穿阈值 is not None and i >= 14:
                     from 策略引擎.反推因子 import 反推RSI价位
                     _窗口 = prices[i-14:i+1]
                     if len(_窗口) == 15 and not np.any(np.isnan(_窗口)):

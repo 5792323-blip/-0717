@@ -107,6 +107,33 @@ def test_non_positive_sentinel_values_are_rendered_as_empty(tmp_path):
     assert data[0]["本根触发哨兵价"] is None
 
 
+def test_report_uses_real_holding_sentinel_without_recomputing(tmp_path, monkeypatch):
+    source = pd.DataFrame({
+        "日期": pd.date_range("2024-01-01", periods=16),
+        "前复权_开盘": [10] * 16, "前复权_最高": [11] * 16,
+        "前复权_最低": [9] * 16, "前复权_收盘": [10] * 16,
+        "不复权_收盘": [10] * 16, "RSI_14": [50] * 16,
+        "RSI_均线_20": [50] * 16, "ATR_14": [1] * 16,
+    })
+    holding = pd.DataFrame([{
+        "K线索引": index, "日期": f"2024-01-{index + 1:02d}",
+        "哨兵价": 123.45 if index == 15 else None,
+        "哨兵价前值": 120.0 if index == 15 else None,
+        "最终动作": "不交易", "本根反推价": 122.0 if index == 15 else None,
+        "本根反推信号类型": "真实引擎信号" if index == 15 else None,
+    } for index in range(16)])
+    result = {"股票代码": "000001", "交易明细": pd.DataFrame(),
+              "持仓过程": holding, "初始资金": 100000,
+              "最终现金": 100000, "配置快照": {}}
+    def fail(*args, **kwargs):
+        raise AssertionError("报告层不应对有真实状态的K线重算哨兵价")
+    monkeypatch.setattr("回测引擎.report_generator.智能反推", fail)
+    output = tmp_path / "real-sentinel.html"
+    生成报告(result, source, 输出路径=str(output))
+    page = output.read_text(encoding="utf-8")
+    assert '"哨兵价": 123.45' in page
+
+
 def test_grid_addon_trade_gets_kline_index_for_replay_lines(tmp_path):
     dates = pd.date_range("2024-01-01", periods=5, freq="D")
     source = pd.DataFrame(
