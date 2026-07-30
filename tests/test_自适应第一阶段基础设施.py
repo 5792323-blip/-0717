@@ -17,6 +17,8 @@ from 自适应基础设施.市场评分.诊断 import 诊断状态
 from 自适应基础设施.市场评分.归因 import 状态归因
 from 自适应基础设施.市场评分.评估报告 import 生成评估报告
 from 自适应基础设施.Alpha排序.Alpha排序 import Alpha排序器
+from 自适应基础设施.Alpha排序.诊断 import 诊断排序
+from 自适应基础设施.Alpha排序.评估报告 import 生成评估报告 as 生成Alpha评估报告
 from 自适应基础设施.市场评分.Active归因 import 生成Active归因
 
 
@@ -288,6 +290,24 @@ def test_Alpha排序只使用生效日前数据():
     result = Alpha排序器([{"股票代码": "600519", "数据": data}]).计算("2020-01-30")
     assert result["生效日期"] == "2020-01-30"
     assert result["有效股票数"] == 0
+
+
+def test_Alpha排序诊断覆盖率和候选变化():
+    records = [
+        {"排名": [{"Alpha评分": 0.8}], "候选股票": ["A", "B"]},
+        {"排名": [{"Alpha评分": 0.7}], "候选股票": ["B", "C"]},
+    ]
+    result = 诊断排序(records)
+    assert result["有效排序数"] == 2
+    assert result["有效覆盖率"] == 1.0
+    assert abs(result["候选平均变化率"] - 2 / 3) < 1e-9
+
+
+def test_Alpha排序评估报告():
+    report = 生成Alpha评估报告([
+        {"排名": [{"Alpha评分": 0.8}], "候选股票": ["A"]},
+    ])
+    assert report["结论"] == "建议进入Alpha+RSI哨兵独立实验"
 
 
 def test_Active实验归因报告():
