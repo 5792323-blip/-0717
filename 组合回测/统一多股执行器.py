@@ -139,11 +139,22 @@ def 运行共享账户回测(
     stocks, start, end, capital, config_dir, liquidity_limit=0.01,
     allow_partial_fill=True, progress_callback=None, stop_requested=None,
     checkpoint_callback=None, benchmark_config=None, historical_constituents=None,
+    audit_run_id=None, audit_log_root=None,
 ):
     """在一个共享账户中直接运行多只股票，不产生候选成交。"""
     started = perf_counter()
     account = 交易账户(capital)
     sessions = {}
+    adapters = {}
+    default_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    audit_log = None
+    if audit_run_id:
+        from 自适应基础设施.事件记录.事件日志 import 事件日志
+        from 自适应基础设施.旧系统适配.旧执行器适配器 import 旧执行器适配器
+        audit_log = 事件日志(
+            audit_log_root or os.path.join(default_root, "研究实验", "运行日志"),
+            audit_run_id, "SHARED_ACCOUNT",
+        )
     errors = []
     timeline = {}
     config_dir = os.path.abspath(config_dir)
@@ -176,6 +187,10 @@ def 运行共享账户回测(
             "运行参数": runtime,
         }
         sessions[stock] = session
+        if audit_run_id:
+            adapters[stock] = 旧执行器适配器(
+                audit_run_id, "SHARED_ACCOUNT", "策略0717", audit_log
+            )
         for position, (index, row) in enumerate(data.iterrows()):
             timestamp = _时间键(index, row)
             if pd.isna(timestamp):
@@ -199,7 +214,6 @@ def 运行共享账户回测(
     max_drawdown = 0.0
     stopped = False
 
-    default_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     benchmark_config = benchmark_config or {
         "name": "沪深300", "benchmark_path": os.path.join(default_root, "数据模块", "大盘数据", "hs300_日K线.pkl"),
         "curve_key": "沪深300权益", "return_key": "沪深300收益率",
@@ -250,7 +264,12 @@ def 运行共享账户回测(
             row_data["_上一根最低价RSI"] = session["上一根最低价RSI"]
             session["执行器"]._组合优先级 = _会话优先级(session)
             session["执行器"]._组合撮合规则 = _组合撮合规则说明()
-            session["执行器"].每根K线处理(row_data, 股票位置)
+            if audit_run_id:
+                adapters[session["股票代码"]].处理(
+                    session["执行器"], row_data, 股票位置
+                )
+            else:
+                session["执行器"].每根K线处理(row_data, 股票位置)
             session["上一根RSI"] = row.get("RSI_14", 50)
             session["上一根最低价RSI"] = row.get(
                 "RSI_最低价", session["上一根RSI"]
