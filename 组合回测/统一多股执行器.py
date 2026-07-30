@@ -140,12 +140,14 @@ def 运行共享账户回测(
     allow_partial_fill=True, progress_callback=None, stop_requested=None,
     checkpoint_callback=None, benchmark_config=None, historical_constituents=None,
     audit_run_id=None, audit_log_root=None,
+    approval_shadow=False,
 ):
     """在一个共享账户中直接运行多只股票，不产生候选成交。"""
     started = perf_counter()
     account = 交易账户(capital)
     sessions = {}
     adapters = {}
+    shadow_approval_sequence = 0
     default_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     audit_log = None
     if audit_run_id:
@@ -285,6 +287,37 @@ def 运行共享账户回测(
 
         new_approvals = account.审批记录[approval_cursor:]
         approval_cursor = len(account.审批记录)
+        if approval_shadow and audit_log and new_approvals:
+            from 自适应基础设施.组合审批.审批适配器 import 影子对账
+            for approval_row in new_approvals:
+                shadow_approval_sequence += 1
+                approval, reconciliation = 影子对账(
+                    approval_row, audit_run_id, "SHARED_ACCOUNT",
+                    shadow_approval_sequence,
+                )
+                audit_log.记录(
+                    "预算审批", {
+                        "approval_id": approval.approval_id,
+                        "intent_id": approval.intent_id,
+                        "symbol": approval.symbol,
+                        "status": approval.status,
+                        "requested_budget": approval.requested_budget,
+                        "approved_budget": approval.approved_budget,
+                        "constraint_hits": approval.constraint_hits,
+                    }, str(approval_row.get("时间", "")), approval.symbol,
+                )
+                audit_log.记录(
+                    "审批对账", {
+                        "intent_id": reconciliation.intent_id,
+                        "symbol": reconciliation.symbol,
+                        "legacy_status": reconciliation.legacy_status,
+                        "shadow_status": reconciliation.shadow_status,
+                        "difference_type": reconciliation.difference_type,
+                        "difference_amount": reconciliation.difference_amount,
+                        "explained": reconciliation.explained,
+                        "explanation": reconciliation.explanation,
+                    }, reconciliation.trade_date, reconciliation.symbol,
+                )
         for row in new_approvals:
             shares = int(float(row.get("成交股数", 0) or 0))
             result = str(row.get("结果", ""))

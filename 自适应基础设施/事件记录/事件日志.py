@@ -11,6 +11,8 @@ from datetime import datetime
     "订单意图": "订单意图.jsonl",
     "可执行订单": "可执行订单.jsonl",
     "成交结果": "成交结果.jsonl",
+    "预算审批": "预算审批.jsonl",
+    "审批对账": "审批对账.jsonl",
     "账户变化": "账户变化.jsonl",
     "守恒检查": "守恒检查.jsonl",
     "错误记录": "错误记录.jsonl",
@@ -61,4 +63,3 @@ class 事件日志:
     def 记录错误(self, error, event_type=""):
         return self.记录("错误记录", {"event_id": "", "错误类型": type(error).__name__,
                                   "错误信息": str(error), "关联事件类型": event_type})
-

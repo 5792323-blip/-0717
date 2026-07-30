@@ -10,6 +10,7 @@ from 自适应基础设施.守恒检查.检查器 import (
 )
 from 自适应基础设施.数据结构.接口 import 成交结果, 转为字典
 from 自适应基础设施.旧系统适配.旧执行器适配器 import 旧执行器适配器
+from 自适应基础设施.组合审批.审批适配器 import 影子对账
 
 
 class _假记录器:
@@ -102,3 +103,15 @@ def test_基线指纹包含三类对账结果():
     result = 结果指纹(trades, curve, 9995.0)
     assert set(result) == {"trade_hash", "daily_account_hash", "final_equity_hash"}
     assert all(len(value) == 64 for value in result.values())
+
+
+def test_旧审批映射与Shadow对账不改变审批事实():
+    approval, reconciliation = 影子对账({
+        "股票代码": "600519", "时间": "2026-01-01", "结果": "实际成交",
+        "请求股数": 100, "成交股数": 100, "成交价": 10.0, "原因": "账户批准",
+    }, "run-1", "BASELINE_ACTIVE", 1)
+    assert approval.status == "APPROVED"
+    assert approval.requested_budget == 1000.0
+    assert approval.approved_budget == 1000.0
+    assert reconciliation.explained is True
+    assert reconciliation.difference_type is None
