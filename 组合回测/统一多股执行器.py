@@ -266,7 +266,7 @@ def 运行共享账户回测(
             session["执行器"]._组合撮合规则 = _组合撮合规则说明()
             if audit_run_id:
                 adapters[session["股票代码"]].处理(
-                    session["执行器"], row_data, 股票位置
+                    session["执行器"], row_data, 股票位置, session["股票代码"]
                 )
             else:
                 session["执行器"].每根K线处理(row_data, 股票位置)

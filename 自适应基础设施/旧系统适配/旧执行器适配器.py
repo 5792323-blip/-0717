@@ -33,9 +33,9 @@ class 旧执行器适配器:
         recorder = getattr(执行器, "交易记录器", None)
         return list(getattr(recorder, "交易列表", []) or [])
 
-    def 处理(self, 执行器, K线数据, 当前索引):
+    def 处理(self, 执行器, K线数据, 当前索引, 股票代码=None):
         """调用一次原有处理，并把新增真实成交映射为审计事件。"""
-        股票代码 = str(getattr(执行器, "股票代码", ""))
+        股票代码 = str(股票代码 or getattr(执行器, "股票代码", "") or "")
         交易日期 = str(K线数据.get("日期", K线数据.get("完整时间", "")))
         现金前 = self._现金(执行器)
         持仓前 = self._持仓(执行器, 股票代码)
@@ -60,7 +60,11 @@ class 旧执行器适配器:
                 净现金 = -abs(总额)
                 状态 = "FILLED"
             elif 类型 == "卖出":
-                净现金 = abs(float(trade.get("成交净额", trade.get("仓位", 0)) or 0))
+                # 旧记录器把卖出净现金记为“卖出净金额”；不能用“仓位”
+                # 代替，否则会把卖出成本误当成回款，导致资金守恒误报。
+                净现金 = abs(float(
+                    trade.get("卖出净金额", trade.get("成交净额", 0)) or 0
+                ))
                 状态 = "FILLED"
             else:
                 continue
@@ -107,4 +111,3 @@ class 旧执行器适配器:
                 "event_id": account_event.event_id, "守恒检查": checks,
             }, 交易日期, 股票代码)
         return {"成交结果": 事件, "账户变化": account_event, "守恒检查": checks}
-

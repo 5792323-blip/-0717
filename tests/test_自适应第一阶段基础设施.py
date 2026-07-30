@@ -1,6 +1,7 @@
 import json
 
 from 自适应基础设施.事件记录.事件日志 import 事件日志
+from 自适应基础设施.事件记录.基线指纹 import 结果指纹
 from 自适应基础设施.标识管理.事件编号 import 生成编号
 from 自适应基础设施.守恒检查.检查器 import (
     检查资金守恒,
@@ -84,9 +85,20 @@ def test_旧执行器适配器只读取结果不重复扣款(tmp_path):
     logger = 事件日志(str(tmp_path), "run-1", "BASELINE_ACTIVE")
     executor = _假执行器()
     adapter = 旧执行器适配器("run-1", "BASELINE_ACTIVE", "test", logger)
-    result = adapter.处理(executor, {"日期": "2026-01-01"}, 0)
+    result = adapter.处理(executor, {"日期": "2026-01-01"}, 0, "600519")
     assert executor.当前现金 == 8995.0
     assert executor.当前持仓["600519"]["股数"] == 100
     assert len(result["成交结果"]) == 1
     assert result["守恒检查"]["资金守恒"]["通过"]
     assert result["守恒检查"]["持仓守恒"]["通过"]
+
+
+def test_基线指纹包含三类对账结果():
+    import pandas as pd
+    trades = pd.DataFrame([{"时间": "2026-01-01", "类型": "买入", "成交数量": 100,
+                            "买入价": 10.0, "交易费用": 5.0}])
+    curve = pd.DataFrame([{"日期": "2026-01-01", "现金": 8995.0,
+                           "持仓市值": 1000.0, "权益": 9995.0, "持仓数量": 100}])
+    result = 结果指纹(trades, curve, 9995.0)
+    assert set(result) == {"trade_hash", "daily_account_hash", "final_equity_hash"}
+    assert all(len(value) == 64 for value in result.values())
