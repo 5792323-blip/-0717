@@ -158,6 +158,27 @@ def _保存多股单票结果(result, stock_dir):
     return os.path.join(stock_dir, "策略决策回放.html")
 
 
+def _保存多股回放数据(result, stock_dir):
+    """保存按需生成个股回放所需的紧凑行情快照。
+
+    多股回测不应在整理阶段为每只股票预生成几十 MB 的 HTML；只保存
+    回放需要的行情列，页面首次打开时再生成对应 HTML。
+    """
+    data = result.get("原始K线数据")
+    if data is None or len(data) == 0:
+        return None
+    columns = [
+        "完整时间", "日期", "前复权_开盘", "前复权_最高", "前复权_最低",
+        "前复权_收盘", "不复权_开盘", "不复权_最高", "不复权_最低",
+        "不复权_收盘", "RSI_14", "RSI_最高价", "RSI_收盘价", "RSI_最低价",
+        "RSI_均线_20", "ATR_14",
+    ]
+    snapshot = data[[col for col in columns if col in data.columns]].copy()
+    path = os.path.join(stock_dir, "回放行情.csv.gz")
+    snapshot.to_csv(path, index=False, compression="gzip", encoding="utf-8")
+    return path
+
+
 def 执行单股任务(task):
     # 第7项为多股本次运行的单票结果目录；单股模式不使用本函数。
     stock, config_dir, start, end, capital, liquidity_limit, stock_dir = (

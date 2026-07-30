@@ -155,7 +155,7 @@ function enhancedOverlay(){
     const y=v=>10+(100-v)/100*(h-20);svg.innerHTML=[20,30,70,80].map(n=>`<line x1="46" y1="${y(n)}" x2="${w-12}" y2="${y(n)}" stroke="#dbe4ff" stroke-width="1.8" opacity=".85"/><text x="42" y="${y(n)+3}" text-anchor="end" fill="#e8edff" font-size="10" font-weight="700">${n}</text>`).join('');rc.appendChild(svg);const legend=rc.querySelector('.legend');if(legend)legend.innerHTML=`<b class="rsi">${RSI_LABEL}</b><b class="ma">RSI MA</b><span style="color:#e8edff;font-weight:700">20 / 30 / 70 / 80</span>`;
   }
 }
-const overlayObserver=new MutationObserver(()=>{enhancedOverlay()});overlayObserver.observe($('priceChart'),{childList:true});overlayObserver.observe($('rsiChart'),{childList:true});window.addEventListener('resize',()=>{document.getElementById('avgOverlay')?.remove();document.getElementById('rsiLevelOverlay')?.remove();enhancedOverlay()});enhancedOverlay();
+window.addEventListener('resize',()=>{document.getElementById('avgOverlay')?.remove();document.getElementById('rsiLevelOverlay')?.remove();enhancedOverlay()});enhancedOverlay();
 const originalDetails=details;
 details=function(i){
   originalDetails(i);

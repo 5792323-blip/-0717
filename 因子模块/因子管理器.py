@@ -72,7 +72,10 @@ class 因子管理器:
             mod = importlib.import_module(f'因子模块.{名称}')
             # 找类名（通常跟文件名一致或叫class_名称）
             for name, obj in inspect.getmembers(mod, inspect.isclass):
-                if name != '因子基类' and issubclass(obj, __import__('因子模块.因子基类', fromlist=['因子基类']).因子基类):
+                # 只实例化模块自身定义的因子类；CMSF 等公共基类被 import
+                # 进来时不能被误当成具体插件。
+                if (name != '因子基类' and obj.__module__ == mod.__name__
+                        and issubclass(obj, __import__('因子模块.因子基类', fromlist=['因子基类']).因子基类)):
                     return obj(参数)
             # 如果没有找到子类，试试模块名本身有 计算 函数
             if hasattr(mod, '计算'):
@@ -167,6 +170,25 @@ class 因子管理器:
                     pass
         
         return 触发列表
+
+    def 卖出信号过滤(self, 持仓, K线数据, 全局状态, 卖出规则) -> dict:
+        """仅对既有卖出规则做可选放行/拦截，不产生新的卖出订单。"""
+        allowed = True
+        details = {}
+        reasons = []
+        for 名称, 因子 in self.已启用因子.items():
+            if not hasattr(因子, '卖出信号过滤'):
+                continue
+            try:
+                item = 因子.卖出信号过滤(持仓, K线数据, 全局状态, 卖出规则)
+                details[名称] = item
+                if not item.get('允许卖出', True):
+                    allowed = False
+                    reasons.append(f"{名称}: {item.get('说明', '未放行')}")
+            except Exception as error:
+                # 过滤器异常时保持原卖出规则，不让观察模块扩大交易风险。
+                details[名称] = {'错误': str(error)}
+        return {'允许卖出': allowed, '说明': ' | '.join(reasons), '明细': details}
 
     def 加仓前检查(self, 持仓, K线数据, 全局状态) -> list:
         """

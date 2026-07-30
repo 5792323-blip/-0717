@@ -293,6 +293,16 @@ def 启动后台回测(form, mode):
         ("momentum_exit", "动能退出因子"), ("take_profit", "止盈因子"),
         ("position_sizing", "半凯利仓位管理"), ("total_control", "总仓位控制"),
         ("grid_addon", "网格加仓（实验：固定/线性/倍数/生命周期预算）"),
+        ("市场状态", "市场状态（观察/哨兵过滤）"),
+        ("状态转换率", "状态转换率 CTR（观察/过滤）"),
+        ("状态持续期", "状态持续期 CST（观察/过滤）"),
+        ("峰值距离", "峰值距离 CPD（观察/过滤）"),
+        ("状态衰减", "状态衰减 CDF（观察/过滤）"),
+        ("状态混乱度", "状态混乱度 CDE（观察/过滤）"),
+        ("顶部风险", "顶部风险 CTRS（观察/买卖过滤）"),
+        ("压缩完成度", "压缩完成度 CCR（哨兵开仓过滤）"),
+        ("状态反转", "状态反转 CRI（哨兵开仓过滤）"),
+        ("稳定吸引度", "稳定吸引度 CSA（哨兵开仓过滤）"),
         ("xgboost_trend", "XGBoost趋势"), ("randomforest_market", "RandomForest大盘"),
         ("committee_vote", "委员会投票"), ("ml_entry_timing", "ML入场时机"),
         ("ml_fake_drop", "ML假跌判断"), ("volatility_classifier", "波动率分类器"),
@@ -1472,8 +1482,26 @@ def 启动后台回测(form, mode):
         <div id="progressTask" class="progress-task">任务：{{ progress.task_label if progress and progress.status != 'idle' else '--' }}</div>
         <div class="progress-track"><div id="progressBar" class="progress-bar" style="width: {% if progress and progress.total %}{{ [100, (progress.completed / progress.total * 100)|round(1)]|min }}{% else %}0{% endif %}%;"></div></div>
         <div class="progress-meta"><span id="progressCount">{% if progress and progress.status != 'idle' %}{{ progress.completed or 0 }} / {{ progress.total or 0 }} {{ progress.unit or '' }}{% else %}0 / 0{% endif %}</span><span id="progressTrades">实际成交 {{ (progress.trades or 0) if progress and progress.status != 'idle' else 0 }} 笔</span><button id="stopBacktest" class="secondary" type="button">停止回测</button><a id="checkpointLink" class="secondary" href="/api/backtest-checkpoint" target="_blank">查看最近检查点</a></div>
-        <div id="liveMetrics" class="live-metrics"></div>
-        <div id="rejectionSummary" class="rejection-summary"><strong>拒绝订单汇总：</strong> {% if progress and progress.status != 'idle' %}{{ (progress.live or {}).get('拒绝订单', 0) }} 笔{% else %}等待回测数据{% endif %}</div>
+        {% set server_live = (progress.live or {}) if progress else {} %}
+        {% if not server_live and progress %}{% set server_live = progress.curve_point or {} %}{% endif %}
+        <div id="liveMetrics" class="live-metrics">
+          {% if server_live %}
+          <span><b>当前权益</b>{{ "{:,.2f}".format(server_live.get("当前权益", server_live.get("权益", 0))|float) }}</span>
+          <span><b>策略收益</b>{{ "{:+.2f}%".format(server_live.get("策略收益率", 0)|float) }}</span>
+          <span><b>{{ server_live.get("基准名称", "基准") }}</b>{{ "{:+.2f}%".format(server_live.get("沪深300收益率", server_live.get("中证500收益率", 0))|float) }}</span>
+          <span><b>当前超额</b>{{ "{:+.2f}%".format(server_live.get("超额收益率", 0)|float) }}</span>
+          <span><b>最大回撤</b>{{ "{:.2f}%".format(server_live.get("最大回撤", 0)|float) }}</span>
+          <span><b>胜率</b>{{ "{:.2f}%".format(server_live.get("已平仓胜率", 0)|float) }}</span>
+          <span><b>现金</b>{{ "{:,.2f}".format(server_live.get("现金", 0)|float) }}</span>
+          <span><b>使用率</b>{{ "{:.2f}%".format(server_live.get("资金使用率", 0)|float) }}</span>
+          <span><b>买入/卖出</b>{{ server_live.get("实际买入", 0) }} / {{ server_live.get("实际卖出", 0) }}</span>
+          <span><b>拒绝订单</b>{{ "{:,}".format(server_live.get("拒绝订单", 0)|int) }}</span>
+          <span><b>累计费用</b>{{ "{:,.2f}".format(server_live.get("累计费用", 0)|float) }}</span>
+          {% else %}
+          <span><b>实时数据</b>等待回测数据</span>
+          {% endif %}
+        </div>
+        <div id="rejectionSummary" class="rejection-summary"><strong>拒绝订单汇总：</strong> {% if server_live %}{{ server_live.get('拒绝订单', 0) }} 笔{% elif progress and progress.status != 'idle' %}等待回测数据{% else %}等待回测数据{% endif %}</div>
         <details id="rejectionDetails" class="rejection-details" hidden>
           <summary>逐笔拒绝订单明细（<span id="rejectionDetailCount">0</span> 笔）</summary>
           <div class="rejection-table-wrap">
@@ -1509,7 +1537,7 @@ def 启动后台回测(form, mode):
             </select>
           </label>
         </div>
-        <div class="return-curve-wrap"><canvas id="liveReturnChart"></canvas><div id="returnCurveEmpty" class="return-curve-empty">回测开始后显示实时曲线</div></div>
+        <div class="return-curve-wrap"><canvas id="liveReturnChart"></canvas><div id="returnCurveEmpty" class="return-curve-empty">{% if server_live %}最新数据点：{{ server_live.get('当前日期', server_live.get('日期', '--')) }} · 策略收益 {{ "{:+.2f}%".format(server_live.get('策略收益率', 0)|float) }}{% else %}回测开始后显示实时曲线{% endif %}</div></div>
       </div>
 
       {% if backtest_result.diagnostics %}
@@ -1566,7 +1594,7 @@ def 启动后台回测(form, mode):
         <iframe
           id="viewer-report"
           class="viewer-frame {% if active_view != 'report' %}hidden{% endif %}"
-          src="{{ report_url or '' }}"
+          src="{{ report_url or 'about:blank' }}"
           title="最新回测报告"></iframe>
         <iframe
           id="viewer-multi"
@@ -1699,8 +1727,8 @@ def 启动后台回测(form, mode):
       const singleRatio = full ? 1 : Number(valueOf(`${prefix}_max_single_ratio`, 0));
       const totalRatio = full ? 1 : Number(valueOf(`${prefix}_max_total_ratio`, 0));
       const cashFloor = full ? 0 : Number(valueOf(`${prefix}_cash_floor`, 0));
-      const singleLimit = singleRatio > 0 ? capital * singleRatio : cashLimit;
       const cashLimit = capital * Math.max(0, 1 - cashFloor);
+      const singleLimit = singleRatio > 0 ? capital * singleRatio : cashLimit;
       const totalLimit = totalRatio > 0 ? capital * totalRatio : cashLimit;
       const gridOn = gridEnabled(prefix);
       const gridMode = valueOf(`${prefix}_grid_mode`, 'linear');
@@ -2146,9 +2174,6 @@ def 启动后台回测(form, mode):
         renderProgress(state);
         await pollRejections();
         await pollReturnCurve();
-        if (['starting', 'running', 'stopping'].includes(state.status) && !progressTimer) {
-          progressTimer = setInterval(pollProgress, 1000);
-        }
         if (['completed', 'stopped', 'failed'].includes(state.status)) {
           clearInterval(progressTimer);
           progressTimer = null;
@@ -2177,9 +2202,10 @@ def 启动后台回测(form, mode):
         document.getElementById('progressDetail').textContent = error.message || '停止请求失败';
       }
     });
-    // 页面可能是因“已有回测正在运行”重新加载，此时服务端已有任务但
-    // 本次 HTML 的初始状态仍可能是 idle，必须主动查询一次才能恢复进度卡。
-    pollProgress();
+    if (progressInitial && ['starting', 'running', 'stopping'].includes(progressInitial.status)) {
+      progressTimer = setInterval(pollProgress, 1000);
+      pollProgress();
+    }
   </script>
 </body>
 </html>
@@ -3229,7 +3255,7 @@ def 预检查无成交风险(form, mode):
         if not report.get("通过"):
             issues.append("个股基本面与行业景气联合准入尚未就绪，请先补齐发布日期、个股快照和行业历史评分。")
     if form.get(f"{prefix}_switch_过滤因子_fundamental_score_filter"):
-        score_path = os.path.join(项目根目录, "基本面", "个股评分结果.csv")
+        score_path = os.path.join(项目根目录, "基本面", "个股历史评分结果.csv")
         try:
             score_dates = pd.to_datetime(pd.read_csv(score_path, usecols=["评分日期"])["评分日期"], errors="coerce").dropna()
         except (OSError, ValueError, pd.errors.ParserError):
@@ -4506,7 +4532,10 @@ def 查看多股报告(token):
 
 def 修复旧版回放脚本(html):
     """兼容已生成的旧回放页面，避免历史 RSI 归因脚本阻断全部页面交互。"""
-    return html.replace(旧版RSI归因脚本片段, 修复后RSI归因脚本片段)
+    html = html.replace(旧版RSI归因脚本片段, 修复后RSI归因脚本片段)
+    old_observer = "const overlayObserver=new MutationObserver(()=>{enhancedOverlay()});overlayObserver.observe($('priceChart'),{childList:true});overlayObserver.observe($('rsiChart'),{childList:true});"
+    guarded_observer = "const overlayObserver=new MutationObserver(()=>{enhancedOverlay()});['priceChart','rsiChart'].forEach(id=>{const node=$(id);if(!node)return;try{overlayObserver.observe(node,{childList:true})}catch(error){}});"
+    return html.replace(old_observer, "enhancedOverlay();").replace(guarded_observer, "enhancedOverlay();")
 
 
 @应用.route("/multi/<token>/stock/<stock>")
@@ -4554,7 +4583,15 @@ def 查看多股单票回放(token, stock):
 
 @应用.route("/output/<path:filename>")
 def 查看输出文件(filename):
-    return send_from_directory(输出目录, filename)
+    path = os.path.join(输出目录, filename)
+    if not os.path.isfile(path):
+        return Response("输出文件不存在。", status=404, content_type="text/plain; charset=utf-8")
+    try:
+        with open(path, encoding="utf-8") as source:
+            html = 修复旧版回放脚本(source.read())
+    except (OSError, UnicodeDecodeError) as error:
+        return Response(f"输出文件读取失败：{error}", status=500, content_type="text/plain; charset=utf-8")
+    return Response(html, mimetype="text/html")
 
 
 # 进程重启不应让“当前单票回放”退回到一个过期的静态文件。
