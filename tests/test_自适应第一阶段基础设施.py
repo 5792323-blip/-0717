@@ -13,6 +13,7 @@ from 自适应基础设施.旧系统适配.旧执行器适配器 import 旧执�
 from 自适应基础设施.组合审批.审批适配器 import 影子对账
 from 自适应基础设施.事件记录.事件时钟 import 比较事件顺序
 from 自适应基础设施.市场评分.市场评分 import 市场评分器
+from 自适应基础设施.市场评分.诊断 import 诊断状态
 
 
 class _假记录器:
@@ -183,6 +184,18 @@ def test_目标事件时钟只比较顺序不修改记录():
     assert result["是否混合买卖"] is True
     assert result["买入数量"] == 2
     assert result["卖出数量"] == 1
+
+
+def test_市场评分状态诊断统计切换和持续时间():
+    result = 诊断状态([
+        {"状态": "ATTACK", "市场评分": 0.8},
+        {"状态": "ATTACK", "市场评分": 0.7},
+        {"状态": "DEFENSE", "市场评分": 0.4},
+    ])
+    assert result["记录数"] == 3
+    assert result["状态切换次数"] == 1
+    assert result["状态分布"] == {"ATTACK": 2, "DEFENSE": 1}
+    assert result["最短状态持续点数"] == 1
 
 
 def test_市场评分只使用生效日前数据(tmp_path):
