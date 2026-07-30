@@ -1331,7 +1331,9 @@ class 规则执行器:
               信号类型=None, 信号质量分=None, 建议仓位=None, 按开盘成交=False,
               指定股数=None, 指定金额=None, 成交模式="breakout", 最大成交价=None):
         """执行买入"""
-        if self.运行参数.get("禁止新开仓", False):
+        股票代码 = K线数据.get('股票代码', '600519')
+        if (self.运行参数.get("市场评分禁止新开仓", False)
+                and 股票代码 not in self.当前持仓):
             self.本根决策["动作原因"] = "该股票当前不在历史成分股池，禁止新开仓或加仓"
             self.本根决策.setdefault("决策记录", {}).setdefault("买入", {})[
                 "成交拒绝原因"

@@ -5,6 +5,7 @@
 import argparse
 import copy
 import csv
+import hashlib
 import json
 import os
 import re
@@ -2816,6 +2817,75 @@ def 创建运行目录(stock):
     return run_dir
 
 
+def _文件哈希(path):
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return ""
+    return digest.hexdigest()
+
+
+def 写入运行清单(run_dir, form, stocks, config_dir, run_type="STRATEGY_EXPERIMENT",
+             baseline_run_id=None, status="RUNNING"):
+    """Persist run identity so pages never infer execution facts themselves."""
+    config_files = []
+    if config_dir and os.path.isdir(config_dir):
+        for root, _, names in os.walk(config_dir):
+            for name in sorted(names):
+                path = os.path.join(root, name)
+                config_files.append((os.path.relpath(path, config_dir), _文件哈希(path)))
+    config_hash = hashlib.sha256(
+        json.dumps(config_files, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    payload = {
+        "schema_version": "1.0",
+        "run_id": os.path.basename(run_dir),
+        "experiment_id": hashlib.sha256(json.dumps({
+            "config_hash": config_hash,
+            "stocks": sorted(stocks),
+            "start_date": form.get("start"),
+            "end_date": form.get("end"),
+            "account_mode": form.get("portfolio_mode") or form.get("account_mode"),
+            "capital": form.get("capital"),
+        }, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16],
+        "run_type": run_type,
+        "baseline_run_id": baseline_run_id,
+        "status": status,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "code_version": "",
+        "config_hash": config_hash,
+        "data_version": _文件哈希(os.path.join(项目根目录, "数据模块", "hs300_list.txt")),
+        "universe_version": _文件哈希(os.path.join(项目根目录, "数据模块", "hs300_历史成分.csv")),
+        "start_date": form.get("start"),
+        "end_date": form.get("end"),
+        "account_mode": form.get("portfolio_mode") or form.get("account_mode"),
+        "stock_count": len(stocks),
+        "save_level": form.get("save_level", "STANDARD_AUDIT"),
+        "sale_proceeds_policy": "卖出资金当日可买",
+        "baseline_comparison_policy": "EXPERIMENT_DIFF",
+        "locked": False,
+    }
+    path = os.path.join(run_dir, "运行清单.json")
+    with open(path, "w", encoding="utf-8") as target:
+        json.dump(payload, target, ensure_ascii=False, indent=2)
+    return payload
+
+
+def 更新运行清单(run_dir, **changes):
+    path = os.path.join(run_dir, "运行清单.json")
+    try:
+        with open(path, encoding="utf-8") as source:
+            payload = json.load(source)
+    except (OSError, ValueError):
+        return
+    payload.update(changes)
+    with open(path, "w", encoding="utf-8") as target:
+        json.dump(payload, target, ensure_ascii=False, indent=2)
+
+
 def 清理旧交互回测数据():
     """清理旧的交互回测结果，不触碰行情、配置和数据备份。"""
     if not os.path.isdir(实验记录目录):
@@ -3474,6 +3544,7 @@ def 运行交互回测(form, progress=None):
     run_dir = 创建运行目录(stock)
     config_dir = 复制配置(run_dir)
     应用表单到配置(config_dir, form)
+    写入运行清单(run_dir, form, [stock], config_dir, run_type="STRATEGY_EXPERIMENT")
     if progress:
         # 让前端和检查点接口知道本次单股任务的真实结果目录；不能等到
         # 完成后再依赖页面刷新，否则刷新 POST 可能重复提交回测。
@@ -3495,6 +3566,7 @@ def 运行交互回测(form, progress=None):
     保存结果(result, 输出目录=run_dir)
     report_path = os.path.join(run_dir, "交互回测报告.html")
     生成报告(result, result.get("原始K线数据"), 输出路径=report_path)
+    更新运行清单(run_dir, status="COMPLETED", finished_at=datetime.now().isoformat(timespec="seconds"))
     token = uuid.uuid4().hex
     最近报告.update({"token": token, "path": report_path, "run_dir": run_dir})
     buys = int(result.get("买入次数", 0))
@@ -3817,6 +3889,7 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
     run_dir = 创建运行目录("multi")
     config_dir = 复制配置(run_dir)
     应用表单到配置(config_dir, form)
+    写入运行清单(run_dir, form, stocks, config_dir, run_type="STRATEGY_EXPERIMENT")
     if progress:
         progress(run_dir=run_dir, status="running", message=f"已创建回测目录，共 {len(stocks)} 只股票")
     fallback_note = ""
@@ -4059,6 +4132,7 @@ def 运行多股回测(form, progress=None, stop_requested=None, checkpoint_call
     multi_token = uuid.uuid4().hex
     multi_report_path = os.path.join(run_dir, "多股策略决策回放.html")
     生成多股策略回放页面(multi_report_path, multi_token, run_dir, details, summary, form, 组合曲线)
+    更新运行清单(run_dir, status="COMPLETED", finished_at=datetime.now().isoformat(timespec="seconds"))
     最近多股报告.update({"token": multi_token, "path": multi_report_path, "run_dir": run_dir})
     基准指标 = 提取组合基准指标(
         组合曲线,

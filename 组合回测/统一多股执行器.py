@@ -144,6 +144,7 @@ def 运行共享账户回测(
     审批模式=None,
     事件时钟模式=None,
     市场评分Shadow=False,
+    市场评分Active=False,
 ):
     """在一个共享账户中运行回测；新审批器目前只允许旁路观察。"""
     if 审批模式 is None:
@@ -157,6 +158,8 @@ def 运行共享账户回测(
     事件时钟模式 = str(事件时钟模式 or "当前")
     if 事件时钟模式 not in ("当前", "目标Shadow"):
         raise ValueError("事件时钟模式必须是：当前或目标Shadow")
+    if 市场评分Active and not 市场评分Shadow:
+        raise ValueError("Market Score Active必须同时启用Shadow日志，便于回放和对账")
     started = perf_counter()
     account = 交易账户(capital)
     sessions = {}
@@ -296,6 +299,9 @@ def 运行共享账户回测(
             )
         entries.sort(key=lambda item: _会话优先级(item[0]), reverse=True)
         for session, 股票位置, row in entries:
+            if market_scorer is not None and 市场评分Active:
+                当前市场状态 = market_result.get("状态", "历史不足")
+                session["运行参数"]["市场评分禁止新开仓"] = 当前市场状态 in ("DEFENSE", "CRISIS")
             if historical_constituents is not None:
                 session["运行参数"]["禁止新开仓"] = not historical_constituents.包含(
                     session["股票代码"], timestamp.strftime("%Y-%m-%d")
@@ -497,6 +503,7 @@ def 运行共享账户回测(
         "事件时钟需调整日数": clock_reordered_days,
         "事件时钟混合买卖日数": clock_mixed_days,
         "市场评分Shadow": bool(市场评分Shadow),
+        "市场评分Active": bool(市场评分Active),
         "市场评分日数": market_score_count,
         "市场评分有效日数": market_score_valid,
         "市场状态分布": market_states,

@@ -14,6 +14,8 @@ from 自适应基础设施.组合审批.审批适配器 import 影子对账
 from 自适应基础设施.事件记录.事件时钟 import 比较事件顺序
 from 自适应基础设施.市场评分.市场评分 import 市场评分器
 from 自适应基础设施.市场评分.诊断 import 诊断状态
+from 自适应基础设施.市场评分.归因 import 状态归因
+from 自适应基础设施.市场评分.评估报告 import 生成评估报告
 
 
 class _假记录器:
@@ -213,3 +215,65 @@ def test_市场评分只使用生效日前数据(tmp_path):
     result = 市场评分器(str(path), [stock]).计算("2020-05-10")
     assert result["生效日期"] == "2020-05-10"
     assert result["指数日期"] < result["生效日期"]
+    assert set(result["有效组件"]) == {"趋势", "广度", "稳定度"}
+
+
+def test_市场状态连续确认和危机恢复迟滞():
+    from 自适应基础设施.市场评分.市场评分 import 市场评分器
+    scorer = 市场评分器("不存在的指数文件")
+    scorer._确认状态 = "NORMAL"
+    assert [scorer._更新确认状态("ATTACK") for _ in range(2)] == ["NORMAL", "NORMAL"]
+    assert scorer._更新确认状态("ATTACK") == "ATTACK"
+    scorer._确认状态 = "CRISIS"
+    assert [scorer._更新确认状态("NORMAL") for _ in range(4)] == ["CRISIS"] * 4
+    assert scorer._更新确认状态("NORMAL") == "NORMAL"
+
+
+def test_市场状态收益回撤归因():
+    result = 状态归因(
+        [{"状态": "ATTACK"}, {"状态": "ATTACK"}, {"状态": "DEFENSE"}],
+        [{"权益": 100.0}, {"权益": 110.0}, {"权益": 105.0}],
+    )
+    assert abs(result["ATTACK"]["区间收益率"] - 0.1) < 1e-9
+    assert result["DEFENSE"]["最大回撤"] == 0.0
+
+
+def test_市场评分Active前评估报告():
+    report = 生成评估报告(
+        [{"状态": "ATTACK", "市场评分": 0.8}, {"状态": "ATTACK", "市场评分": 0.7},
+         {"状态": "ATTACK", "市场评分": 0.6}],
+        [{"权益": 100.0}, {"权益": 101.0}, {"权益": 102.0}],
+    )
+    assert report["结论"] == "建议进入只限制新增仓位的Active实验"
+
+
+def test_市场评分Active必须保留Shadow日志():
+    import contextlib
+    import io
+    import os
+    import pytest
+    from 组合回测.统一多股执行器 import 运行共享账户回测
+    with pytest.raises(ValueError, match="必须同时启用Shadow"):
+        with contextlib.redirect_stdout(io.StringIO()):
+            运行共享账户回测(
+                ["600519"], "2020-01-01", "2020-12-31", 2000000,
+                os.path.abspath("1_策略配置"), 市场评分Active=True,
+            )
+
+
+def test_市场评分只禁止无持仓股票开仓():
+    from 策略引擎.规则执行器 import 规则执行器
+    executor = object.__new__(规则执行器)
+    executor.运行参数 = {"市场评分禁止新开仓": True}
+    executor.当前持仓 = {"600519": {"股数": 100}}
+    assert "600519" in executor.当前持仓
+    assert "000001" not in executor.当前持仓
+
+
+def test_状态诊断忽略历史不足记录():
+    result = 诊断状态([
+        {"状态": "历史不足"}, {"状态": "ATTACK", "市场评分": 0.8},
+        {"状态": "ATTACK", "市场评分": 0.7},
+    ])
+    assert result["有效状态数"] == 2
+    assert result["状态切换次数"] == 0

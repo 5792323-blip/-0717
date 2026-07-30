@@ -133,6 +133,14 @@ class 股票账户视图:
         return available, limits
 
     def 记录审批(self, **row):
+        result = str(row.get("结果", ""))
+        if result not in {"通过", "已通过", "成交"} and (
+            "拒绝" in result or "部分" in result or row.get("原因")
+        ):
+            self.账户.拒绝序号 += 1
+            row.setdefault("rejection_id", f"R{self.账户.拒绝序号:08d}")
+        else:
+            row.setdefault("rejection_id", None)
         item = {"股票代码": self.股票代码, "股票名称": 获取股票名称(self.股票代码)}
         item.update(row)
         self.账户.审批记录.append(item)
@@ -154,6 +162,7 @@ class 交易账户:
         self.最新价格 = {}
         self.审批记录 = []
         self.审批统计 = defaultdict(int)
+        self.拒绝序号 = 0
 
     def 股票视图(self, stock):
         return 股票账户视图(self, stock)

@@ -34,6 +34,9 @@ class 交易记录器:
         self.持仓记录 = []
         self.买入序号 = 0
         self.持仓组序号 = 0
+        self.意图序号 = 0
+        self.订单序号 = 0
+        self.成交序号 = 0
         
         # 当前交易的临时标记
         self.当前哨兵价 = None
@@ -97,6 +100,9 @@ class 交易记录器:
                网格级别=0, 加仓后总持仓=None):
         """记录一笔买入"""
         self.买入序号 += 1
+        self.意图序号 += 1
+        self.订单序号 += 1
+        self.成交序号 += 1
         if 持仓组ID is None:
             self.持仓组序号 += 1
             持仓组ID = f"G{self.持仓组序号:06d}"
@@ -106,6 +112,10 @@ class 交易记录器:
         self.当前站岗价 = None
         
         买入记录 = {
+            "intent_id": f"I{self.意图序号:08d}",
+            "order_id": f"O{self.订单序号:08d}",
+            "execution_id": f"X{self.成交序号:08d}",
+            "rejection_id": None,
             "序号": self.买入序号,
             "持仓组ID": 持仓组ID,
             "网格级别": int(网格级别 or 0),
@@ -160,7 +170,14 @@ class 交易记录器:
                站岗价=None, ATR缓冲价=None, RSI峰值=None, 日期='', 时间='',
                仓位=None, 成交数量=None, 持仓组ID=None):
         """记录一笔卖出"""
+        self.意图序号 += 1
+        self.订单序号 += 1
+        self.成交序号 += 1
         卖出记录 = {
+            "intent_id": f"I{self.意图序号:08d}",
+            "order_id": f"O{self.订单序号:08d}",
+            "execution_id": f"X{self.成交序号:08d}",
+            "rejection_id": None,
             "序号": self.买入序号,
             "持仓组ID": 持仓组ID,
             "时间": str(时间).strip() if str(时间).strip() else f"{日期}".strip(),

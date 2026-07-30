@@ -14,6 +14,10 @@ class 市场评分器:
             self.指数["均线60"] = self.指数["close"].rolling(60, min_periods=60).mean()
             self.指数["波动20"] = self.指数["close"].pct_change().rolling(20, min_periods=20).std(ddof=0)
         self.sessions = sessions or []
+        self._确认状态 = "历史不足"
+        self._候选状态 = None
+        self._候选连续天数 = 0
+        self._危机恢复连续天数 = 0
 
     @staticmethod
     def _百分位(series, value):
@@ -49,8 +53,14 @@ class 市场评分器:
             if pd.notna(ma20):
                 breadth_values.append(float(close.iloc[-1] > ma20))
         breadth = sum(breadth_values) / len(breadth_values) if breadth_values else 0.5
-        score = (0.40 * trend if trend is not None else 0) + 0.35 * breadth + (0.25 * stability if stability is not None else 0)
-        if trend is None and stability is None:
+        components = [(trend, 0.40), (breadth, 0.35), (stability, 0.25)]
+        valid_components = [(value, weight) for value, weight in components if value is not None]
+        weight_total = sum(weight for _, weight in valid_components)
+        score = (
+            sum(value * weight for value, weight in valid_components) / weight_total
+            if weight_total else None
+        )
+        if score is None:
             state = "历史不足"
         elif score >= 0.70:
             state = "ATTACK"
@@ -60,7 +70,45 @@ class 市场评分器:
             state = "DEFENSE"
         else:
             state = "CRISIS"
-        return {"状态": state, "市场评分": round(float(score), 8), "有效": True,
+        confirmed = self._更新确认状态(state)
+        return {"状态": confirmed, "原始状态": state,
+                "市场评分": round(float(score), 8) if score is not None else None, "有效": score is not None,
                 "趋势分": trend, "广度分": breadth, "稳定度分": stability,
+                "有效组件": [name for name, value in (("趋势", trend), ("广度", breadth), ("稳定度", stability)) if value is not None],
                 "指数日期": str(row["date"].date()), "有效股票数": len(breadth_values),
                 "生效日期": current.strftime("%Y-%m-%d")}
+
+    def _更新确认状态(self, state):
+        if state == "历史不足":
+            return self._确认状态
+        if state == "CRISIS":
+            self._确认状态 = "CRISIS"
+            self._候选状态 = None
+            self._候选连续天数 = 0
+            self._危机恢复连续天数 = 0
+            return self._确认状态
+        if self._确认状态 == "CRISIS":
+            if state in ("ATTACK", "NORMAL", "DEFENSE"):
+                self._危机恢复连续天数 += 1
+                if self._危机恢复连续天数 < 5:
+                    return "CRISIS"
+                self._确认状态 = state
+                self._候选状态 = None
+                self._候选连续天数 = 0
+                self._危机恢复连续天数 = 0
+                return self._确认状态
+            self._危机恢复连续天数 = 0
+        if state == self._确认状态:
+            self._候选状态 = None
+            self._候选连续天数 = 0
+            return self._确认状态
+        if state == self._候选状态:
+            self._候选连续天数 += 1
+        else:
+            self._候选状态 = state
+            self._候选连续天数 = 1
+        if self._候选连续天数 >= 3:
+            self._确认状态 = state
+            self._候选状态 = None
+            self._候选连续天数 = 0
+        return self._确认状态
