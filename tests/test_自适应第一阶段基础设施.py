@@ -151,3 +151,21 @@ def test_多股共享账户Shadow审批映射保持正式结果(tmp_path):
     ]
     assert rows
     assert all(row["payload"]["explained"] for row in rows)
+    assert shadow["live"]["审批模式"] == "Shadow"
+    assert shadow["live"]["Shadow审批数"] == len(rows)
+    assert shadow["live"]["Shadow未解释差异"] == 0
+
+
+def test_静态Active在未完成事件拆分前安全拒绝():
+    import contextlib
+    import io
+    import os
+    import pytest
+    from 组合回测.统一多股执行器 import 运行共享账户回测
+
+    with pytest.raises(RuntimeError, match="尚未接入事件拆分"):
+        with contextlib.redirect_stdout(io.StringIO()):
+            运行共享账户回测(
+                ["600519"], "2020-01-01", "2020-12-31", 2000000,
+                os.path.abspath("1_策略配置"), 审批模式="静态Active",
+            )

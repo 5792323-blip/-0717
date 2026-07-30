@@ -141,13 +141,24 @@ def 运行共享账户回测(
     checkpoint_callback=None, benchmark_config=None, historical_constituents=None,
     audit_run_id=None, audit_log_root=None,
     approval_shadow=False,
+    审批模式=None,
 ):
-    """在一个共享账户中直接运行多只股票，不产生候选成交。"""
+    """在一个共享账户中运行回测；新审批器目前只允许旁路观察。"""
+    if 审批模式 is None:
+        审批模式 = "Shadow" if approval_shadow else "旧审批"
+    审批模式 = str(审批模式)
+    if 审批模式 not in ("旧审批", "Shadow", "静态Active"):
+        raise ValueError("审批模式必须是：旧审批、Shadow或静态Active")
+    if 审批模式 == "静态Active":
+        raise RuntimeError("静态Active尚未接入事件拆分，已安全拒绝启动")
+    approval_shadow = 审批模式 == "Shadow"
     started = perf_counter()
     account = 交易账户(capital)
     sessions = {}
     adapters = {}
     shadow_approval_sequence = 0
+    shadow_approval_total = 0
+    shadow_approval_unexplained = 0
     default_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     audit_log = None
     if audit_run_id:
@@ -295,6 +306,9 @@ def 运行共享账户回测(
                     approval_row, audit_run_id, "SHARED_ACCOUNT",
                     shadow_approval_sequence,
                 )
+                shadow_approval_total += 1
+                if not reconciliation.explained:
+                    shadow_approval_unexplained += 1
                 audit_log.记录(
                     "预算审批", {
                         "approval_id": approval.approval_id,
@@ -437,6 +451,9 @@ def 运行共享账户回测(
         "资金使用率": round(float(account.持仓市值()) / max(float(account.权益()), 1.0) * 100, 6),
         "持仓数量": len(account.持仓),
         "组合撮合规则": _组合撮合规则说明(),
+        "审批模式": 审批模式,
+        "Shadow审批数": shadow_approval_total,
+        "Shadow未解释差异": shadow_approval_unexplained,
     }
     return {
         "账户": account,
