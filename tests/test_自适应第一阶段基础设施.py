@@ -179,3 +179,6 @@ def test_目标事件时钟只比较顺序不修改记录():
     assert result["目标事件顺序"] == ["卖出", "买入", "买入"]
     assert result["是否需要调整"] is True
     assert records == [{"类型": "买入"}, {"类型": "卖出"}, {"类型": "买入"}]
+    assert result["是否混合买卖"] is True
+    assert result["买入数量"] == 2
+    assert result["卖出数量"] == 1

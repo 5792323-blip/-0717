@@ -15,4 +15,7 @@ def 比较事件顺序(records):
         "目标事件顺序": [actual[position] for position in positions],
         "是否需要调整": positions != list(range(len(actual))),
         "事件数量": len(actual),
+        "是否混合买卖": "买入" in actual and "卖出" in actual,
+        "买入数量": actual.count("买入"),
+        "卖出数量": actual.count("卖出"),
     }

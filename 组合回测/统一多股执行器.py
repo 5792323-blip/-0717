@@ -165,6 +165,7 @@ def 运行共享账户回测(
     shadow_approval_unexplained = 0
     clock_days = 0
     clock_reordered_days = 0
+    clock_mixed_days = 0
     default_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     audit_log = None
     if audit_run_id:
@@ -311,6 +312,8 @@ def 运行共享账户回测(
             clock_days += 1
             if clock_result["是否需要调整"]:
                 clock_reordered_days += 1
+            if clock_result["是否混合买卖"]:
+                clock_mixed_days += 1
             audit_log.记录("事件时钟对账", clock_result,
                            timestamp.strftime("%Y-%m-%d %H:%M"), "")
         if approval_shadow and audit_log and new_approvals:
@@ -472,6 +475,7 @@ def 运行共享账户回测(
         "事件时钟模式": 事件时钟模式,
         "事件时钟对账日数": clock_days,
         "事件时钟需调整日数": clock_reordered_days,
+        "事件时钟混合买卖日数": clock_mixed_days,
     }
     return {
         "账户": account,
