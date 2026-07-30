@@ -142,6 +142,7 @@ def 运行共享账户回测(
     audit_run_id=None, audit_log_root=None,
     approval_shadow=False,
     审批模式=None,
+    事件时钟模式=None,
 ):
     """在一个共享账户中运行回测；新审批器目前只允许旁路观察。"""
     if 审批模式 is None:
@@ -152,6 +153,9 @@ def 运行共享账户回测(
     if 审批模式 == "静态Active":
         raise RuntimeError("静态Active尚未接入事件拆分，已安全拒绝启动")
     approval_shadow = 审批模式 == "Shadow"
+    事件时钟模式 = str(事件时钟模式 or "当前")
+    if 事件时钟模式 not in ("当前", "目标Shadow"):
+        raise ValueError("事件时钟模式必须是：当前或目标Shadow")
     started = perf_counter()
     account = 交易账户(capital)
     sessions = {}
@@ -159,6 +163,8 @@ def 运行共享账户回测(
     shadow_approval_sequence = 0
     shadow_approval_total = 0
     shadow_approval_unexplained = 0
+    clock_days = 0
+    clock_reordered_days = 0
     default_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     audit_log = None
     if audit_run_id:
@@ -261,6 +267,7 @@ def 运行共享账户回测(
             stopped = True
             break
         entries = timeline[timestamp]
+        clock_approval_start = len(account.审批记录)
         # 开盘时所有股票价格均已知；组合审批不能读取本根收盘价。
         for session, _, row in entries:
             account.股票视图(session["股票代码"]).更新估值价(
@@ -298,6 +305,14 @@ def 运行共享账户回测(
 
         new_approvals = account.审批记录[approval_cursor:]
         approval_cursor = len(account.审批记录)
+        if 事件时钟模式 == "目标Shadow" and audit_log:
+            from 自适应基础设施.事件记录.事件时钟 import 比较事件顺序
+            clock_result = 比较事件顺序(account.审批记录[clock_approval_start:])
+            clock_days += 1
+            if clock_result["是否需要调整"]:
+                clock_reordered_days += 1
+            audit_log.记录("事件时钟对账", clock_result,
+                           timestamp.strftime("%Y-%m-%d %H:%M"), "")
         if approval_shadow and audit_log and new_approvals:
             from 自适应基础设施.组合审批.审批适配器 import 影子对账
             for approval_row in new_approvals:
@@ -454,6 +469,9 @@ def 运行共享账户回测(
         "审批模式": 审批模式,
         "Shadow审批数": shadow_approval_total,
         "Shadow未解释差异": shadow_approval_unexplained,
+        "事件时钟模式": 事件时钟模式,
+        "事件时钟对账日数": clock_days,
+        "事件时钟需调整日数": clock_reordered_days,
     }
     return {
         "账户": account,
