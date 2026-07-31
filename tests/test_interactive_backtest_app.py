@@ -11,6 +11,7 @@ from 运行程序.interactive_backtest_app import (
     保存最近工作台配置, 获取当前单票回放地址, 获取多股票回放地址,
     运行交互回测, 启动后台回测, 回测进度, 提取模式配置, 规范化表单, 预检查无成交风险,
     _保存回测检查点, 回测检查点, 提取组合基准指标, 修复旧版回放脚本,
+    格式化可选百分比,
 )
 
 
@@ -26,6 +27,12 @@ def test_extracts_hs300_and_excess_return_from_portfolio_curve():
     )
 
     assert metrics == {"沪深300收益率": 22.0, "超额收益率": 13.0}
+
+
+def test_shared_attribution_mode_marks_undefined_win_rate_unavailable():
+    """共享账户股票归因不提供账户级胜率时，页面完成摘要不能转换 None。"""
+    assert 格式化可选百分比(None) == "--"
+    assert 格式化可选百分比(0.625) == "62.50%"
 
 
 def test_normalize_form_preserves_boolean_module_switches():
@@ -259,16 +266,34 @@ def test_save_config_persists_execution_timing_to_formal_config(tmp_path):
     assert switches["模块类别"]["核心模块"]["next_bar_entry"]["启用"] is True
 
 
-def test_same_bar_core_switch_can_select_timing_without_dropdown_change():
+def test_legacy_core_switch_can_select_timing_when_dropdown_is_absent():
     form = 规范化表单({
         "ui_mode": "single",
-        "single_entry_timing": "precomputed_stop_entry",
         "single_switch_核心模块_same_bar_entry": "on",
         "single_switch_核心模块_next_bar_entry": "",
     })
     assert form["single_entry_timing"] == "same_bar_entry"
     assert form["single_switch_核心模块_same_bar_entry"] is True
     assert form["single_switch_核心模块_next_bar_entry"] is False
+
+
+def test_explicit_strict_timing_wins_over_stale_same_bar_core_switch():
+    """新版页面的时序下拉是权威输入，不能被旧复选框反向覆盖。"""
+    form = 规范化表单({
+        "ui_mode": "multi",
+        "multi_entry_timing": "precomputed_stop_entry",
+        "multi_switch_核心模块_same_bar_entry": "on",
+        "multi_switch_核心模块_next_bar_entry": "",
+    })
+    assert form["multi_entry_timing"] == "precomputed_stop_entry"
+    assert form["multi_switch_核心模块_same_bar_entry"] is False
+    assert form["multi_switch_核心模块_next_bar_entry"] is True
+
+
+def test_multi_timing_dropdown_syncs_the_core_switches_in_browser_script():
+    source = open(os.path.join(ROOT, "运行程序", "interactive_backtest_app.py"), encoding="utf-8").read()
+
+    assert "if (node.name === 'multi_entry_timing') setEntryTiming('multi', node.value);" in source
 
 
 def test_home_page_renders():
@@ -394,7 +419,23 @@ def test_modes_share_strategy_but_keep_account_configuration_isolated():
     assert single["capital"] == 111
     assert multi["capital"] == 222
     assert single["switch_核心模块_same_bar_entry"] is True
-    assert multi["switch_核心模块_same_bar_entry"] is True
+    assert multi["switch_核心模块_same_bar_entry"] is False
+
+
+def test_multi_submission_uses_its_explicit_public_strategy_values():
+    form = 构建默认表单()
+    form["single_entry_timing"] = "same_bar_entry"
+    form["single_switch_核心模块_same_bar_entry"] = True
+    form["single_switch_核心模块_next_bar_entry"] = False
+    form["multi_entry_timing"] = "precomputed_stop_entry"
+    form["multi_switch_核心模块_same_bar_entry"] = False
+    form["multi_switch_核心模块_next_bar_entry"] = True
+
+    multi = 提取模式配置(form, "multi")
+
+    assert multi["entry_timing"] == "precomputed_stop_entry"
+    assert multi["switch_核心模块_same_bar_entry"] is False
+    assert multi["switch_核心模块_next_bar_entry"] is True
 
 
 def test_normalized_form_mirrors_public_strategy_without_copying_accounts():

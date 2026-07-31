@@ -87,6 +87,22 @@ def test_jsonl日志追加且包含运行上下文(tmp_path):
     assert all(row["account_id"] == "BASELINE_ACTIVE" for row in rows)
 
 
+def test_jsonl日志写入失败必须显式抛出(tmp_path, monkeypatch):
+    logger = 事件日志(str(tmp_path), "run-fail", "BASELINE_ACTIVE")
+    original = logger._写入_json
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(logger, "_写入_json", fail)
+    try:
+        logger.记录("账户变化", {"event_id": "e1"})
+    except OSError as error:
+        assert "disk full" in str(error)
+    else:
+        raise AssertionError("日志写入失败不能静默成功")
+
+
 def test_标准数据结构可以序列化():
     result = 成交结果(
         "e1", "o1", "i1", "600519", "BUY", "FILLED", 100, 100,

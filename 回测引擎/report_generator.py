@@ -21,6 +21,7 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
         return None
     股票代码 = 回测结果.get('股票代码', 'unknown')
     股票名称 = 回测结果.get('股票名称') or 获取股票名称(股票代码)
+    股票归因回放 = bool(回测结果.get('股票级不可用') or 回测结果.get('运行参数', {}).get('股票归因'))
     if 输出路径 is None:
         # 单股票回放固定为一个文件，新的回测直接覆盖旧页面。
         输出路径 = os.path.join(项目根目录, '9_输出', f'K线回放_{股票代码}.html')
@@ -74,6 +75,9 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
             _持仓过程_df = 回测结果.get('持仓过程', None)
             反推哨兵价查询 = {}
             真实K线状态查询 = {}
+            # 只要运行结果带有持仓过程，哨兵价就必须完全来自引擎事实。
+            # 不对缺失索引做报告层重算，避免蓝线与真实交易状态分叉。
+            _有真实持仓过程 = _持仓过程_df is not None and len(_持仓过程_df) > 0
             if _持仓过程_df is not None and len(_持仓过程_df) > 0:
                 import json as _json
                 for _ft_idx, _ft_row in _持仓过程_df.iterrows():
@@ -161,7 +165,7 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
             if _初始资金 <= 0:
                 _初始资金 = float(回测结果.get('配置快照', {}).get('仓位配置.yaml', {}).get('基准仓位', {}).get('初始资金', 0) or 0)
             if _初始资金 <= 0:
-                _初始资金 = 1000000
+                raise ValueError('回测结果缺少有效初始资金，拒绝生成虚假权益曲线')
             _当前现金 = _初始资金
             _当前持股 = 0
             _权益列表 = []
@@ -236,7 +240,7 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
                 i = len(k线记录)
                 _是买入K线 = d['完整时间'] in _买入时间映射
                 # 有真实持仓过程时，报告只消费执行器字段，不再重复反推。
-                _允许报告兜底重算 = i not in 真实K线状态查询
+                _允许报告兜底重算 = not _有真实持仓过程
                 if _允许报告兜底重算 and i >= 14 and rsi_ma_values is not None and (rsi_ma_values[i-1] is None or (not np.isnan(rsi_ma_values[i-1]))):
                    if _是买入K线 and i >= 15:
                        前窗口 = prices[i-15:i]
@@ -358,17 +362,18 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
                         )
                     else:
                         _本根哨兵价说明 = "保持不变：未出现新的 RSI 上穿信号"
-                # 报告层仅作旧数据兜底；真实回测状态会在下方覆盖此字段。
-                if _哨兵价当前 is not None and not (isinstance(_哨兵价当前, float) and (np.isnan(_哨兵价当前) or pd.isna(_哨兵价当前))):
-                    d['哨兵价'] = round(_哨兵价当前, 2)
-                else:
-                    d['哨兵价'] = None
-                d['哨兵价状态'] = _本根哨兵价说明
-                d['哨兵价前值'] = round(_前一根哨兵价, 2) if _前一根哨兵价 is not None else None
-                # 更新跟踪变量
-                _前一根哨兵价 = _哨兵价当前
-                _前一根K最高价 = _前复权高
-                _前RSI = _当前RSI
+                # 只有旧结果没有真实持仓过程时，报告层才允许兼容性重算。
+                # 新回测的哨兵生命周期必须完全来自执行器状态，不能被这里覆盖。
+                if _允许报告兜底重算:
+                    if _哨兵价当前 is not None and not (isinstance(_哨兵价当前, float) and (np.isnan(_哨兵价当前) or pd.isna(_哨兵价当前))):
+                        d['哨兵价'] = round(_哨兵价当前, 2)
+                    else:
+                        d['哨兵价'] = None
+                    d['哨兵价状态'] = _本根哨兵价说明
+                    d['哨兵价前值'] = round(_前一根哨兵价, 2) if _前一根哨兵价 is not None else None
+                    _前一根哨兵价 = _哨兵价当前
+                    _前一根K最高价 = _前复权高
+                    _前RSI = _当前RSI
                 # ★ 权益曲线（逐K线计算）
                 _前复权收盘价 = d.get('前复权_收盘', None)
                 if _前复权收盘价 is not None and (isinstance(_前复权收盘价, float) and pd.isna(_前复权收盘价)):
@@ -409,7 +414,7 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
                 d['权益'] = round(_当前权益, 2) if not (isinstance(_当前权益, float) and (pd.isna(_当前权益) or np.isnan(_当前权益))) else _当前现金
                 # 优先使用回测引擎实际记录的决策和账户状态。
                 _真实状态 = 真实K线状态查询.get(i, {})
-                for _字段 in ['买入信号', '过滤检查', '卖出检查', '决策记录', '最终动作', '动作原因', '成交拒绝原因', '当前现金', '持仓市值', '权益', '持仓数量', '哨兵价', '哨兵价状态', '哨兵价前值', '本根触发哨兵价', '哨兵价形成类型', '哨兵价本根新形成', '哨兵价已确认可执行', '哨兵价跟踪启用', '哨兵价可执行', '哨兵价已消费价格', '最近成交哨兵价', '本根反推价', '本根反推信号类型', '本根反推目标RSI', 'RSI反推价当前', '上一根突破基准价当前', '最终买入触发价当前', '哨兵价锁定信号类型']:
+                for _字段 in ['买入信号', '过滤检查', '卖出检查', '决策记录', '最终动作', '动作原因', '成交拒绝原因', '当前现金', '持仓市值', '权益', '持仓数量', '哨兵价', '哨兵价状态', '哨兵价前值', '本根触发哨兵价', '哨兵价形成类型', '哨兵价本根新形成', '哨兵生命周期ID', '哨兵价已确认可执行', '哨兵价跟踪启用', '哨兵价可执行', '哨兵价已消费价格', '最近成交哨兵价', '本根反推价', '本根反推信号类型', '本根反推目标RSI', 'RSI反推价当前', '上一根突破基准价当前', '最终买入触发价当前', '哨兵价锁定信号类型']:
                     if _字段 not in _真实状态:
                         continue
                     _值 = _真实状态[_字段]
@@ -444,7 +449,20 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
                 k线记录.append(d)
             K线JSON = json.dumps(k线记录, ensure_ascii=False, default=str)
     # 权益JSON
-    _权益JSON = json.dumps([(None if (v is not None and pd.isna(v)) else v) for v in [r.get('权益') for r in k线记录]], ensure_ascii=False)
+    _权益JSON = json.dumps(
+        [] if 股票归因回放 else [(None if (v is not None and pd.isna(v)) else v) for v in [r.get('权益') for r in k线记录]],
+        ensure_ascii=False,
+    )
+    if 股票归因回放:
+        # 共享账户现金与组合权益不可分配到单股票；回放只展示成交、持仓和归因。
+        html = html.replace('策略收益</span>', '收益贡献率</span>')
+        html = html.replace('最终资金</span>', '股票级现金不可用</span>')
+        html = html.replace('<div class="chart-card" id="equityCard">', '<div class="chart-card" id="equityCard" style="display:none">')
+        html = html.replace('<div class="chart-card" id="capitalCard">', '<div class="chart-card" id="capitalCard" style="display:none">')
+        html = html.replace(
+            'function setStats(){',
+            "function setStats(){if(ATTRIBUTION_RETURN!==null){$('returnStat').textContent=pct(ATTRIBUTION_RETURN);$('returnStat').className=ATTRIBUTION_RETURN>=0?'good':'bad';$('stockStat').textContent='--';$('stockAlpha').textContent='--';$('hsReturn').textContent='--';$('alphaReturn').textContent='--';$('cashStat').textContent='组合级';$('winStat').textContent='--';$('tradeStat').textContent=TRADES.length;return;}",
+        )
     
     for k, v in {
         '%%股票代码%%': f'{股票代码} · {股票名称}',
@@ -454,17 +472,24 @@ def 生成报告(回测结果, 原始K线数据=None, 输出路径=None):
         '%%买入次数%%': str(回测结果.get('买入次数', 0)),
         '%%卖出次数%%': str(回测结果.get('卖出次数', 0)),
         '%%胜率%%': f"{回测结果.get('胜率', 0):.1f}",
-        '%%总收益率%%': f"{回测结果.get('总收益率', 0):+.2f}",
-        '%%最终现金%%': f"{回测结果.get('最终现金', 0):,.0f}",
+        '%%总收益率%%': (
+            f"{float(回测结果.get('收益贡献率', 0) or 0) * 100:+.2f}"
+            if 股票归因回放 else f"{float(回测结果.get('总收益率', 0) or 0):+.2f}"
+        ),
+        '%%最终现金%%': '组合级' if 股票归因回放 else f"{回测结果.get('最终现金', 0):,.0f}",
         '%%初始资金%%': f"{_初始资金:.0f}",
         '%%权益JSON%%': _权益JSON,
+        '%%归因收益率%%': json.dumps(
+            # 模板 pct() 接收百分数；归因字段则按组合初始资金的比例保存。
+            float(回测结果.get('收益贡献率', 0) or 0) * 100 if 股票归因回放 else None
+        ),
         '%%基准JSON%%': json.dumps({
             'strategy': [r.get('权益') for r in k线记录],
             'stock': 回测结果.get('基准_个股买入持有', []),
             'hs300': 回测结果.get('基准_HS300', []),
         }, ensure_ascii=False, default=str),
         '%%配置JSON%%': json.dumps(回测结果.get('配置快照', {}), ensure_ascii=False, default=str),
-        '%%回放口径%%': '组合实际成交' if 回测结果.get('运行参数', {}).get('组合实际回放') else '单股策略模拟',
+        '%%回放口径%%': '共享账户股票归因（无股票级权益）' if 股票归因回放 else ('组合实际成交' if 回测结果.get('运行参数', {}).get('组合实际回放') else '单股策略模拟'),
         '%%耗时%%': f"{回测结果.get('耗时', 0):.1f}",
     }.items():
         html = html.replace(k, str(v))

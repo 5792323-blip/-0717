@@ -134,6 +134,33 @@ def test_report_uses_real_holding_sentinel_without_recomputing(tmp_path, monkeyp
     assert '"哨兵价": 123.45' in page
 
 
+def test_report_does_not_recompute_missing_real_state_sentinel(tmp_path, monkeypatch):
+    source = pd.DataFrame({
+        "日期": pd.date_range("2024-01-01", periods=16),
+        "前复权_开盘": [10] * 16, "前复权_最高": [11] * 16,
+        "前复权_最低": [9] * 16, "前复权_收盘": [10] * 16,
+        "不复权_收盘": [10] * 16, "RSI_14": [50] * 16,
+        "RSI_均线_20": [50] * 16, "ATR_14": [1] * 16,
+    })
+    # 有真实持仓过程但缺少索引15；报告层不得为缺失事实自行画线。
+    holding = pd.DataFrame([{
+        "K线索引": 0, "日期": "2024-01-01", "哨兵价": None,
+        "最终动作": "不交易", "动作原因": "尚未形成哨兵价",
+    }])
+    result = {"股票代码": "000001", "交易明细": pd.DataFrame(),
+              "持仓过程": holding, "初始资金": 100000,
+              "最终现金": 100000, "配置快照": {}}
+    def fail(*args, **kwargs):
+        raise AssertionError("存在真实持仓过程时不应报告层重算")
+    monkeypatch.setattr("回测引擎.report_generator.智能反推", fail)
+    output = tmp_path / "missing-real-sentinel.html"
+    生成报告(result, source, 输出路径=str(output))
+    page = output.read_text(encoding="utf-8")
+    start = page.index("KLINE=") + len("KLINE=")
+    data, _ = json.JSONDecoder().raw_decode(page[start:])
+    assert all(row.get("哨兵价") is None for row in data)
+
+
 def test_grid_addon_trade_gets_kline_index_for_replay_lines(tmp_path):
     dates = pd.date_range("2024-01-01", periods=5, freq="D")
     source = pd.DataFrame(

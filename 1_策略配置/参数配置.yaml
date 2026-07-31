@@ -12,8 +12,8 @@
   过户费: 1.0e-05
   买入溢价: 1.001
 买入参数:
-  买入时机模式: same_bar_entry
-  首次开仓时机模式: same_bar_entry
+  买入时机模式: precomputed_stop_entry
+  首次开仓时机模式: precomputed_stop_entry
   网格加仓时机模式: precomputed_stop_entry
   涨停不买: true
   涨跌停比例: 0.1

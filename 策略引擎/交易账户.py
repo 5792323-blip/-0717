@@ -134,13 +134,43 @@ class 股票账户视图:
 
     def 记录审批(self, **row):
         result = str(row.get("结果", ""))
-        if result not in {"通过", "已通过", "成交"} and (
-            "拒绝" in result or "部分" in result or row.get("原因")
-        ):
+        success_results = {"通过", "已通过", "成交", "实际成交", "全部成交", "部分成交"}
+        if result not in success_results and ("拒绝" in result or row.get("原因")):
             self.账户.拒绝序号 += 1
             row.setdefault("rejection_id", f"R{self.账户.拒绝序号:08d}")
         else:
             row.setdefault("rejection_id", None)
+        # Persist before/after account snapshots so audit can reconcile each approval.
+        stock_key = _规范股票代码(self.股票代码)
+        current_cash = float(self.账户.现金)
+        actual_key = next((key for key in self.账户.持仓 if _规范股票代码(key) == stock_key), None)
+        current_position = int(self.账户.持仓.get(actual_key, {}).get("股数", 0) or 0)
+        qty = int(float(row.get("成交股数", 0) or 0))
+        success = result in {"实际成交", "部分成交"} and qty > 0
+        row.setdefault("审批结果", result)
+        row.setdefault(
+            "成交状态",
+            "部分成交" if result == "部分成交" or (result == "实际成交" and qty > 0 and row.get("请求股数") and qty < int(float(row.get("请求股数"))))
+            else "已成交" if success else "未成交",
+        )
+        if success and str(row.get("类型")) == "买入":
+            previous_position = current_position - qty
+        elif success and str(row.get("类型")) == "卖出":
+            previous_position = current_position + qty
+        else:
+            previous_position = current_position
+        fee = float(row.get("交易费用", 0) or 0)
+        price = float(row.get("成交价", 0) or 0)
+        gross = qty * price
+        cash_delta = (-(gross + fee) if row.get("类型") == "买入" else gross - fee) if success else 0.0
+        row.setdefault("审批前现金", current_cash - cash_delta)
+        row.setdefault("审批后现金", current_cash)
+        row.setdefault("审批前持仓", previous_position)
+        row.setdefault("审批后持仓", current_position)
+        self.账户._last_approval_cash = current_cash
+        self.账户._last_approval_positions = {
+            key: int(value.get("股数", 0) or 0) for key, value in self.账户.持仓.items()
+        }
         item = {"股票代码": self.股票代码, "股票名称": 获取股票名称(self.股票代码)}
         item.update(row)
         self.账户.审批记录.append(item)
@@ -163,6 +193,8 @@ class 交易账户:
         self.审批记录 = []
         self.审批统计 = defaultdict(int)
         self.拒绝序号 = 0
+        self._last_approval_cash = self.现金
+        self._last_approval_positions = {}
 
     def 股票视图(self, stock):
         return 股票账户视图(self, stock)

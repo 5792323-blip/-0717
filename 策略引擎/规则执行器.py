@@ -21,8 +21,7 @@ from 成交模型.buy_fill_model import 计算买入成交, 计算回撤买入�
 from 买入执行模块.sentinel_trigger import 形成候选, 评估触发
 from 买入执行模块.rsi_reverse_price import (
     计算 as 计算RSI反推价,
-    计算Wilder上涨反推价,
-    计算WilderRSI,
+    计算SMA_RSI,
 )
 from 策略引擎.交易账户 import 单股账户
 
@@ -172,6 +171,14 @@ class 规则执行器:
             if row.get('结果') == '组合层拦截':
                 row.setdefault('拒绝分类', self._拒绝分类(row))
                 row.setdefault('详细原因', self._拒绝详细原因(row))
+            # 成交审批必须引用同一笔交易记录的生命周期编号。
+            if row.get('结果') in {'实际成交', '部分成交'}:
+                records = getattr(self.交易记录器, '交易列表', [])
+                if records:
+                    latest = records[-1]
+                    for field in ('intent_id', 'order_id', 'execution_id'):
+                        if latest.get(field):
+                            row.setdefault(field, latest[field])
             self.账户视图.记录审批(**row)
 
     @staticmethod
@@ -361,6 +368,7 @@ class 规则执行器:
         self.最近成交哨兵价 = None
         self.哨兵价形成类型 = None        
         self.哨兵价形成索引 = None
+        self.哨兵生命周期ID = 0
         self.哨兵价本根新形成 = False
         self.哨兵价已确认可执行 = False
         self.待确认哨兵价 = None
@@ -398,6 +406,10 @@ class 规则执行器:
 
     def _更新哨兵价跟踪(self, K线数据):
         """在没有新哨兵价形成时，只允许旧哨兵价向上跟踪。"""
+        # 严格预挂模式中，预计算在本根开盘前建立的新哨兵只能观察本根
+        # 最高价是否突破；从下一根K线开始才允许把后续最高价上移到哨兵线。
+        if getattr(self, '哨兵价本根新形成', False):
+            return
         if not (
             getattr(self, '哨兵价跟踪启用', self.哨兵价已形成)
             and self.哨兵价当前 is not None
@@ -414,7 +426,7 @@ class 规则执行器:
         if 当前最高 <= 当前哨兵价:
             return
 
-        if self.买入时机模式 == STRICT_PRECOMPUTED:
+        if getattr(self, '买入时机模式', None) == STRICT_PRECOMPUTED:
             反推价 = getattr(self, 'RSI反推价当前', None)
             try:
                 反推价 = float(反推价) if 反推价 is not None else 当前哨兵价
@@ -767,6 +779,10 @@ class 规则执行器:
             self._更新过滤因子状态(K线数据)
         self._更新RSI阈值守仓(K线数据)
 
+        # 每根K线开始时清除上根的“本根新形成”标记；随后预计算若建立
+        # 新生命周期，会重新置为 True 并保留到本根状态记录。
+        self.哨兵价本根新形成 = False
+
         # 本根预挂模式在开盘前用上一根已完成状态建立订单；本根收盘
         # 后的新 RSI 只能用于下一根，不能回填当前最高价。
         if (self.买入时机模式 in (SAME_BAR_ENTRY, STRICT_PRECOMPUTED)
@@ -821,8 +837,7 @@ class 规则执行器:
                 self._记录策略异常("背离检测", error, 当前索引)
         
         # 当前K线只负责检查上一根收盘前已经存在的哨兵价。
-        # 本标记只描述当前收盘后形成、供下一根使用的信号，不能污染本根买入检查。
-        self.哨兵价本根新形成 = False
+        # 本标记只描述本根开盘预计算形成、供本根之后使用的信号，不能污染本根买入检查。
         本根触发哨兵价 = self.哨兵价当前
         self._本根触发哨兵价 = 本根触发哨兵价
         self._执行待次根开盘卖出(K线数据, 当前索引)
@@ -839,17 +854,9 @@ class 规则执行器:
         # same_bar_entry 的“本根形成”指本根开始前根据上一根完整数据
         # 预计算并挂出的哨兵价；不能在本根收盘后再用本根 RSI 形成第二个
         # 哨兵价并回看本根最高价成交。
-        if self.买入时机模式 != SAME_BAR_ENTRY:
-            # 收盘后形成哨兵价；严格模式只保留给后续K线，旧版回放模式
-            # 才允许用本根最高价做历史兼容检查。
-            self._计算哨兵价(K线数据, 当前索引)
-            # 旧版回放模式保留本根收盘后的兼容检查；严格模式禁止回填。
-            if (允许旧版本根回填(self.买入时机模式)
-                    and self.哨兵价本根新形成
-                    and self._核心模块启用('本根形成立即成交', False)
-                    and not 待买入已成交):
-                self._本根触发哨兵价 = self.哨兵价当前
-                self._检查买入(K线数据, 当前索引)
+        # 收盘后仅依据本根已完成 RSI/RSI-MA 的真实上穿建立新生命周期；
+        # 没有上穿时保留上一根哨兵。当前最高价不参与形成价计算。
+        self._计算哨兵价(K线数据, 当前索引)
         
         # 检查卖出信号
         # ★ 修复: 预取快照，避免dict突变
@@ -930,6 +937,7 @@ class 规则执行器:
             上一根突破基准价=self.上一根突破基准价当前,
             最终买入触发价=self.最终买入触发价当前,
             哨兵价形成类型=self.哨兵价形成类型,
+            哨兵生命周期ID=getattr(self, '哨兵生命周期ID', 0),
             哨兵价本根新形成=self.哨兵价本根新形成,
             哨兵价已确认可执行=getattr(self, '哨兵价已确认可执行', False),
             哨兵价跟踪启用=getattr(self, '哨兵价跟踪启用', False),
@@ -948,17 +956,15 @@ class 规则执行器:
         )
     
     def _预计算本根哨兵价(self):
-        """用上一根完整 RSI 状态反推本根买入价，不读取本根收盘。"""
-        if not self._核心模块启用('反推价计算', True):
-            return
-        if len(self.价格序列) < 15 or self.上一根_最高价 is None:
-            return
+        """保留上一根哨兵；没有真实上穿时禁止预建新生命周期。"""
+        # 反推价只能由真实 RSI/RSI-MA 上穿事件建立。上一根未上穿时，
+        # 当前K线开盘不得按“下一目标阈值”提前建立哨兵。
         try:
             # 本方法在当前K线价格追加前调用，因此现有序列本身就是
             # 上一根收盘及更早的完整历史，不能再丢掉最后一根。
             历史价格 = self.价格序列
             历史RSI = self.RSI序列
-            上一根RSI = 计算WilderRSI(历史价格[-15:])
+            上一根RSI = 计算SMA_RSI(历史价格[-15:])
             if 上一根RSI is None or pd.isna(上一根RSI):
                 return
             阈值20 = self._获取RSI信号阈值("RSI上穿20", 20)
@@ -974,9 +980,8 @@ class 规则执行器:
                 目标RSI = 阈值70
             else:
                 return
-            结果 = 计算Wilder上涨反推价(历史价格[-15:], 目标RSI)
-            # Wilder 反推接口返回“RSI反推价”；兼容旧实现的“目标价位”
-            # 只作为过渡，避免字段协议不一致时静默变成零交易。
+            结果 = 计算RSI反推价(历史价格[-15:], 目标RSI)
+            # 统一使用正式 SMA-RSI 反推接口；兼容结果字段名以保持数据契约。
             反推价 = 结果.get('RSI反推价', 结果.get('目标价位'))
             if not 结果.get('可用', 反推价 is not None) or 反推价 is None:
                 return
@@ -1015,6 +1020,7 @@ class 规则执行器:
             self.哨兵价已确认可执行 = True
             self.哨兵价形成类型 = 信号类型
             self.哨兵价锁定信号类型 = 信号类型
+            self.哨兵生命周期ID = getattr(self, '哨兵生命周期ID', 0) + 1
             self.哨兵价形成索引 = self.已买入K线数
             self.哨兵价本根新形成 = True
             self.哨兵量价快照 = self._生成哨兵量价快照()
@@ -1824,12 +1830,14 @@ class 规则执行器:
         if not self._核心模块启用('哨兵价形成', True):
             self.本根决策["动作原因"] = "核心模块已关闭：哨兵价形成"
             return
+        # 严格预挂模式的生命周期已在本根开盘前由上一根完整状态预计算。
+        # 当前K线收盘只保存观察结果，不能再次读取本根 RSI/最高价形成或
+        # 覆盖哨兵；下一根开盘再执行并进入跟踪阶段。
+        if getattr(self, '买入时机模式', None) == STRICT_PRECOMPUTED:
+            return
         前复权高 = K线数据.get('前复权_最高', 0)
         当前RSI = K线数据.get('RSI_14', 50)
         上一根RSI = K线数据.get('_上一根RSI', 50)
-        # 重置本根新形成标记（在检测到上穿形成哨兵价时设为True）
-        self.哨兵价本根新形成 = False
-
         # 检查 RSI 上穿（优先级：20 → MA → 30 → 70）。哨兵价属于
         # 信号层记录：每次有效上穿都必须形成/更新哨兵，成交过滤在后续
         # 买入检查中单独处理，不能反过来抑制哨兵形成。
@@ -1856,26 +1864,6 @@ class 规则执行器:
             _上穿类型 = "RSI上穿70"
         
         _本根实际上穿 = _上穿阈值 is not None
-
-        # 收盘后预挂下一档目标：例如本根 RSI=28.7，尚未上穿30，
-        # 但下一根应提前计算“目标 RSI=30”的反推价。下一根只读取
-        # 当前最高价判断是否突破，不再用下一根收盘 RSI 重新形成哨兵价。
-        # 已有未成交哨兵时保持原值，避免每根K线重算导致哨兵价漂移或下移。
-        if (_上穿阈值 is None and not self.哨兵价已形成
-                and not self.哨兵价本根新形成):
-            try:
-                _当前值 = float(当前RSI)
-                _均线值 = float(self.上一根_RSI_MA) if self.上一根_RSI_MA is not None else None
-                if _当前值 < 阈值20:
-                    _上穿阈值, _上穿类型 = 阈值20, "RSI上穿20"
-                elif _当前值 < 阈值30:
-                    _上穿阈值, _上穿类型 = 阈值30, "RSI上穿30"
-                elif _均线值 is not None and _当前值 < _均线值:
-                    _上穿阈值, _上穿类型 = _均线值, "RSI上穿均线"
-                elif _当前值 < 阈值70:
-                    _上穿阈值, _上穿类型 = 阈值70, "RSI上穿70"
-            except (TypeError, ValueError):
-                pass
 
         if _本根实际上穿 and len(self.价格序列) >= 16:
             当前规则 = self._获取买入规则(_上穿类型)
@@ -1934,6 +1922,7 @@ class 规则执行器:
                         self.哨兵价已确认可执行 = True
                         self.哨兵价形成类型 = _上穿类型
                         self.哨兵价锁定信号类型 = _上穿类型
+                        self.哨兵生命周期ID = getattr(self, '哨兵生命周期ID', 0) + 1
                         self.哨兵价形成索引 = 当前索引
                         self.哨兵价本根新形成 = True
                         self.哨兵量价快照 = self._生成哨兵量价快照()
@@ -2598,7 +2587,20 @@ class 规则执行器:
 
         # 实际不复权成交价按股票报价精度保留两位小数；复权触发价仍
         # 只用于前面的触发判断，不作为账面成交价。
+        # 成交价必须落在当前K线的不复权OHLC范围内；滑点只能影响
+        # 可成交方向，不能制造低于最低价或高于最高价的账面成交。
+        最低价 = K线数据.get('不复权_最低', 0)
+        最高价 = K线数据.get('不复权_最高', 0)
+        try:
+            最低价 = float(最低价)
+            最高价 = float(最高价)
+        except (TypeError, ValueError):
+            最低价 = 最高价 = 0.0
+        if 最低价 > 0 and 最高价 >= 最低价:
+            卖出价 = min(max(float(卖出价), 最低价), 最高价)
         卖出价 = round(float(卖出价), 2)
+        if 最低价 > 0 and 最高价 >= 最低价:
+            卖出价 = min(max(卖出价, round(最低价, 2)), round(最高价, 2))
         
         if 卖出价 <= 0:
             return False

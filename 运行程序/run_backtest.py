@@ -8,6 +8,7 @@ import json
 import math
 import os
 import sys
+import hashlib
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor
 from datetime import date
@@ -34,6 +35,8 @@ sys.path.insert(0, 项目根目录)
 from 数据模块.股票名称 import 获取股票名称
 from 模块系统 import 模块开关管理器
 from 回测引擎.backtest_engine import 跑回测
+from 数据模块.数据质量审计 import 生成数据版本
+from 运行程序.实验身份 import 生成实验身份
 
 
 def 读取股票列表(value):
@@ -61,6 +64,31 @@ def 单股摘要(result, requested_start, requested_end):
     actual_days = max(1, (date.fromisoformat(actual_end) - date.fromisoformat(actual_start)).days)
     requested_days = max(1, (date.fromisoformat(requested_end) - date.fromisoformat(requested_start)).days)
     years = max(1 / 252, actual_days / 365.25)
+    if result.get("股票级不可用"):
+        return {
+            "股票代码": result.get("股票代码"),
+            "股票名称": result.get("股票名称") or 获取股票名称(result.get("股票代码")),
+            "指标层级": "股票归因",
+            "股票级不可用": True,
+            "买入次数": int(result.get("买入次数", 0)),
+            "卖出次数": int(result.get("卖出次数", 0)),
+            "实际成交数": int(result.get("实际成交数", 0)),
+            "拒绝数": int(result.get("拒绝数", 0)),
+            "期末股数": int(result.get("期末股数", 0) or 0),
+            "期末持仓市值": 安全数值(result.get("期末持仓市值")),
+            "已实现损益": 安全数值(result.get("已实现损益")),
+            "未实现损益": 安全数值(result.get("未实现损益")),
+            "累计损益贡献": 安全数值(result.get("累计损益贡献")),
+            "收益贡献率": 安全数值(result.get("收益贡献率")),
+            "最终现金": None,
+            "最终权益": None,
+            "总收益率": None,
+            "年化收益率": None,
+            "最大回撤": None,
+            "数据开始": actual_start,
+            "数据结束": actual_end,
+            "数据覆盖率": min(1.0, actual_days / requested_days),
+        }
     total_return = 安全数值(result.get("总收益率")) / 100
     annual_return = (1 + total_return) ** (1 / max(years, 1 / 252)) - 1 if total_return > -1 else -1
     return {
@@ -161,13 +189,27 @@ def _保存多股单票结果(result, stock_dir):
         trades.to_csv(os.path.join(stock_dir, "交易明细.csv"), index=False, encoding="utf-8-sig")
     if holding is not None and len(holding) > 0:
         holding.to_csv(os.path.join(stock_dir, "持仓过程.csv"), index=False, encoding="utf-8-sig")
+    attribution = {
+        key: result.get(key) for key in (
+            "股票代码", "股票名称", "指标层级", "股票级不可用", "初始资金",
+            "实际成交数", "拒绝数", "期末持仓市值", "已实现损益", "未实现损益",
+            "累计损益贡献", "收益贡献率",
+        )
+    }
+    with open(os.path.join(stock_dir, "股票归因.json"), "w", encoding="utf-8") as target:
+        json.dump(attribution, target, ensure_ascii=False, indent=2, default=str)
     with open(os.path.join(stock_dir, "回测摘要.txt"), "w", encoding="utf-8") as target:
         target.write(f"股票代码: {result.get('股票代码', '')}\n")
         target.write(f"股票名称: {result.get('股票名称') or 获取股票名称(result.get('股票代码'))}\n")
-        target.write(f"初始资金: {result.get('初始资金', 0):,.0f}\n")
-        target.write(f"最终权益: {result.get('最终权益', 0):,.0f}\n")
-        target.write(f"总收益率: {result.get('总收益率', 0):+.2f}%\n")
-        target.write(f"最大回撤: {result.get('最大回撤', 0):.2f}%\n")
+        if result.get("股票级不可用"):
+            target.write("指标层级: 股票归因（共享账户，不提供股票级现金、权益、收益率或回撤）\n")
+            target.write(f"累计损益贡献: {float(result.get('累计损益贡献', 0) or 0):+,.2f}\n")
+            target.write(f"收益贡献率: {float(result.get('收益贡献率', 0) or 0) * 100:+.2f}%\n")
+        else:
+            target.write(f"初始资金: {result.get('初始资金', 0):,.0f}\n")
+            target.write(f"最终权益: {result.get('最终权益', 0):,.0f}\n")
+            target.write(f"总收益率: {result.get('总收益率', 0):+.2f}%\n")
+            target.write(f"最大回撤: {result.get('最大回撤', 0):.2f}%\n")
         target.write(f"胜率: {result.get('胜率', 0):.2f}%\n")
         target.write(f"交易次数: {result.get('买入次数', 0)}买 / {result.get('卖出次数', 0)}卖\n")
     return os.path.join(stock_dir, "策略决策回放.html")
@@ -227,19 +269,21 @@ def 汇总结果(details):
     valid = [item for item in details if "错误" not in item]
     if not valid:
         return {"股票数": 0, "综合得分": -999.0}
-    mean_annual = sum(item["年化收益率"] for item in valid) / len(valid)
-    mean_drawdown = sum(item["最大回撤"] for item in valid) / len(valid)
+    account_level = [item for item in valid if item.get("年化收益率") is not None]
+    mean_annual = sum(item["年化收益率"] for item in account_level) / len(account_level) if account_level else None
+    mean_drawdown = sum(item["最大回撤"] for item in account_level) / len(account_level) if account_level else None
     total_buys = sum(item["买入次数"] for item in valid)
     total_sells = sum(item["卖出次数"] for item in valid)
     # “总交易数”表示实际成交笔数（买入+卖出）；胜率仍以已完成卖出交易为分母。
     total_trades = total_buys + total_sells
     win_rate = (
-        sum(item["胜率"] * item["卖出次数"] for item in valid) / total_sells
+        sum((item.get("胜率", 0) or 0) * item["卖出次数"] for item in valid) / total_sells
         if total_sells else 0.0
     )
-    profit_loss_ratio = sum(item["盈亏比"] for item in valid) / len(valid)
-    return_drawdown = mean_annual / max(mean_drawdown, 1e-6)
-    score = 0.5 * return_drawdown + 0.3 * win_rate + 0.2 * profit_loss_ratio
+    profit_loss_ratio = sum(item.get("盈亏比", 0) or 0 for item in account_level) / len(account_level) if account_level else None
+    return_drawdown = mean_annual / max(mean_drawdown, 1e-6) if mean_annual is not None else None
+    score = (0.5 * return_drawdown + 0.3 * win_rate + 0.2 * profit_loss_ratio
+             if return_drawdown is not None and profit_loss_ratio is not None else None)
     return {
         "股票数": len(valid),
         "买入总数": total_buys,
@@ -318,6 +362,7 @@ def main():
         "资金模式": "共享账户" if args.portfolio_mode == "shared" else "等额独立账户",
         "共享账户快照": account_snapshot,
         "组合权益曲线": portfolio_curve,
+        "组合损益对账": shared.get("组合损益对账", {}) if args.portfolio_mode == "shared" else {},
         "汇总": 汇总结果(details),
         "股票明细": details,
     }
@@ -331,6 +376,32 @@ def main():
             "命令行回测_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
         )
     os.makedirs(evidence_dir, exist_ok=True)
+    config_files = []
+    if os.path.isdir(config_dir):
+        for current, _, names in os.walk(config_dir):
+            for name in sorted(names):
+                path = os.path.join(current, name)
+                digest = hashlib.sha256()
+                try:
+                    with open(path, "rb") as source:
+                        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                    config_files.append((os.path.relpath(path, config_dir), digest.hexdigest()))
+                except OSError:
+                    continue
+    config_hash = hashlib.sha256(json.dumps(config_files, sort_keys=True).encode()).hexdigest()
+    stock_paths = [os.path.join(项目根目录, "数据模块", "raw", f"{stock}_双价格合并.pkl") for stock in stocks]
+    benchmark_path = os.path.join(项目根目录, "数据模块", "大盘数据", "hs300_日K线.pkl")
+    existing_data = [path for path in stock_paths + [benchmark_path] if os.path.isfile(path)]
+    data_version = 生成数据版本(existing_data, []) if existing_data else {"hash": "", "files": 0, "inputs": []}
+    universe_path = os.path.join(项目根目录, "数据模块", "hs300_list.txt")
+    universe_hash = hashlib.sha256(open(universe_path, "rb").read()).hexdigest() if os.path.isfile(universe_path) else ""
+    experiment_id = 生成实验身份(
+        code_version="", config_hash=config_hash,
+        data_version=data_version["hash"], universe_version=universe_hash,
+        stocks=stocks, start_date=args.start, end_date=args.end,
+        fee_config={}, account_mode=report["资金模式"],
+    )
     manifest = {
         "schema_version": "1.0", "run_id": os.path.basename(evidence_dir),
         "run_type": "CLI_BACKTEST", "status": "COMPLETED",
@@ -338,6 +409,9 @@ def main():
         "start_date": args.start, "end_date": args.end, "stocks": stocks,
         "stock_count": len(stocks), "account_mode": report["资金模式"],
         "capital": args.capital, "config_dir": config_dir,
+        "experiment_id": experiment_id, "config_hash": config_hash,
+        "data_version": data_version["hash"], "data_files": data_version["files"],
+        "universe_version": universe_hash, "universe_mode": "current_snapshot",
         "save_level": "STANDARD_AUDIT", "locked": False,
     }
     with open(os.path.join(evidence_dir, "运行清单.json"), "w", encoding="utf-8") as target:
@@ -354,6 +428,19 @@ def main():
         pd.concat(trade_frames, ignore_index=True).to_csv(
             os.path.join(evidence_dir, "交易明细.csv"), index=False
         )
+    if args.portfolio_mode == "shared":
+        approvals = getattr(shared.get("账户"), "审批记录", [])
+        if approvals:
+            approval_frame = pd.DataFrame(approvals)
+            for field in ("intent_id", "order_id", "execution_id"):
+                if field in approval_frame:
+                    approval_frame[field] = approval_frame.apply(
+                        lambda row: f"{row.get('股票代码')}:{row[field]}"
+                        if str(row[field]).strip() else row[field], axis=1
+                    )
+            approval_frame.to_csv(
+                os.path.join(evidence_dir, "审批记录.csv"), index=False
+            )
     from 运行程序.可信度审计 import 审计运行目录
     credibility = 审计运行目录(evidence_dir)
     manifest["credibility_status"] = credibility["overall_status"]

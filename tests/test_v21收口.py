@@ -3,6 +3,7 @@ import json
 import pandas as pd
 import subprocess
 import sys
+import yaml
 
 from 运行程序.结果生命周期 import 清理可重建深度数据, 锁定
 from 运行程序.可信度审计 import 审计运行目录
@@ -65,3 +66,10 @@ def test_命令行入口自动生成运行清单和审计(tmp_path):
     manifest = json.loads((evidence / "运行清单.json").read_text())
     assert manifest["run_type"] == "CLI_BACKTEST"
     assert manifest["credibility_status"] in {"PASS", "WARNING", "FAIL"}
+
+
+def test_正式配置使用严格预挂单模式():
+    params = yaml.safe_load((__import__("pathlib").Path("1_策略配置/参数配置.yaml")).read_text(encoding="utf-8"))
+    core = yaml.safe_load((__import__("pathlib").Path("1_策略配置/核心模块配置.yaml")).read_text(encoding="utf-8"))
+    assert params["买入参数"]["首次开仓时机模式"] == "precomputed_stop_entry"
+    assert core["核心模块"]["下一根执行"]["启用"] is True

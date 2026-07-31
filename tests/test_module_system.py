@@ -41,7 +41,7 @@ def test_executor_uses_central_switches():
     }
     assert {item["名称"] for item in executor.卖出规则列表} == {"atr_trailing"}
     assert {item["名称"] for item in executor.过滤因子列表} == {"rsi_ma_filter"}
-    assert executor.哨兵价本根形成立即买入 is True
+    assert executor.哨兵价本根形成立即买入 is False
 
 
 def test_ablation_copy_changes_only_requested_switch(tmp_path):

@@ -42,6 +42,21 @@ def test_shared_account_priority_is_deterministic_and_prefers_pending_grid_posit
     assert _会话优先级(new_signal) == (0, 0, 3, "600003")
 
 
+@pytest.mark.skipif(not os.path.isfile(DATA), reason="缺少600519本地行情")
+def test_shared_account_reversed_stock_input_keeps_same_approval_order():
+    options = dict(
+        start="2025-01-01", end="2025-03-31", capital=100_000,
+        config_dir=CONFIG, liquidity_limit=0.01,
+    )
+    forward = 运行共享账户回测(["600519", "600000"], **options)
+    reverse = 运行共享账户回测(["600000", "600519"], **options)
+    fields = ("时间", "股票代码", "类型", "成交股数", "结果")
+    left = [tuple(row.get(field) for field in fields) for row in forward["账户"].审批记录]
+    right = [tuple(row.get(field) for field in fields) for row in reverse["账户"].审批记录]
+    assert left == right
+    assert forward["live"]["现金"] == pytest.approx(reverse["live"]["现金"])
+
+
 def test_shared_account_view_is_stock_scoped_but_risk_is_portfolio_wide():
     account = 交易账户(100_000)
     a = account.股票视图("600001")

@@ -1,6 +1,6 @@
 # rsi.py — 计算RSI指标 (相对强弱指标)
 # 功能: 传入收盘价列表，返回RSI数值列表
-# 算法: Wilder's Smoothing，和TradingView一致
+# 算法: SMA（简单移动平均）
 #
 # 用法:
 #   from 策略引擎.rsi import 计算RSI
@@ -22,7 +22,7 @@ def 计算RSI(收盘价, 周期=14):
         pandas Series，RSI数值，前(周期)个值为NaN
     
     说明:
-        使用Wilder's Smoothing算法
+        使用SMA算法：最近14个涨跌幅分别求平均
         RSI = 100 - 100 / (1 + RS)
         RS = 平均涨幅 / 平均跌幅
     """
@@ -36,7 +36,7 @@ def 计算RSI(收盘价, 周期=14):
     涨幅 = 涨跌.clip(lower=0)     # 只保留正数
     跌幅 = -涨跌.clip(upper=0)    # 转成正数
     
-    # Wilder's Smoothing: 用SMA计算平均值
+    # 正式策略固定使用最近周期个涨跌幅的简单平均。
     平均涨幅 = 涨幅.rolling(window=周期, min_periods=周期).mean()
     平均跌幅 = 跌幅.rolling(window=周期, min_periods=周期).mean()
     

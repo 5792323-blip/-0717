@@ -167,6 +167,17 @@ def 跑回测(股票代码="600519", 开始日期=None, 结束日期=None,
     结果['买入时机模式'] = _参数配置.get('买入参数', {}).get(
         '买入时机模式', 'precomputed_stop_entry'
     )
+    # 零交易时保留可解释的原因计数，避免页面或审计层猜测原因。
+    if len(结果['交易明细']) == 0:
+        reasons = 结果['持仓过程'].get('动作原因', pd.Series(dtype=str)).fillna('').astype(str)
+        结果['异常诊断'] = {
+            '类型': 'ZERO_TRADES',
+            '数据行数': int(len(数据)),
+            '哨兵未形成': int(reasons.str.contains('哨兵价|哨兵', regex=True).sum()),
+            '过滤拦截': int(reasons.str.contains('过滤|拦截', regex=True).sum()),
+            '资金或数量限制': int(reasons.str.contains('资金|一手|仓位|数量', regex=True).sum()),
+            '行情不可交易': int(reasons.str.contains('停牌|行情缺失|成交量', regex=True).sum()),
+        }
     from 时序审计.trade_timing_audit import 审计回测
     结果['时序审计'] = 审计回测(结果['交易明细'], 结果['买入时机模式'])
     结果['数据行数'] = len(数据)

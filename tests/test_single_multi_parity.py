@@ -49,3 +49,35 @@ def test_one_stock_shared_mode_matches_single_engine_exactly():
     )
     assert shared["最终现金"] == pytest.approx(single["最终现金"], abs=1e-6)
     assert shared["最终权益"] == pytest.approx(single["最终权益"], abs=1e-6)
+
+
+@pytest.mark.skipif(not os.path.isfile(DATA), reason="缺少600519本地行情")
+def test_multi_stock_shared_zero_trade_does_not_inherit_portfolio_equity():
+    run = 运行共享账户回测(
+        ["600118", "600519"], "2025-01-01", "2025-03-31", 200_000,
+        CONFIG, liquidity_limit=0.01,
+    )
+    result = {row["股票代码"]: row for row in run["股票结果"]}
+    zero = result["600519"]
+    assert len(zero["交易明细"]) == 0
+    assert zero["已实现损益"] == pytest.approx(0.0)
+    assert zero["未实现损益"] == pytest.approx(0.0)
+    assert zero["累计损益贡献"] == pytest.approx(0.0)
+    assert zero["收益贡献率"] == pytest.approx(0.0)
+    assert zero["最终现金"] is None
+    assert zero["最终权益"] is None
+    assert zero["总收益率"] is None
+    assert zero["持仓过程"]["权益"].isna().all()
+
+
+@pytest.mark.skipif(not os.path.isfile(DATA), reason="缺少600519本地行情")
+def test_multi_stock_shared_contributions_reconcile_to_portfolio_pnl():
+    run = 运行共享账户回测(
+        ["600118", "600519"], "2025-01-01", "2025-03-31", 200_000,
+        CONFIG, liquidity_limit=0.01,
+    )
+    total = sum(row["累计损益贡献"] for row in run["股票结果"])
+    portfolio_pnl = run["账户"].权益() - run["账户"].初始资金
+    assert total == pytest.approx(portfolio_pnl, abs=0.01)
+    assert run["组合损益对账"]["对账状态"] == "PASS"
+    assert run["组合损益对账"]["对账差额"] == pytest.approx(0.0, abs=0.01)

@@ -67,7 +67,99 @@ def _读取配置快照(config_dir):
     return snapshot
 
 
-def _整理股票结果(session, initial_capital, config_snapshot, elapsed):
+def _股票归因(trades, ending_value):
+    """按执行器的加权剩余成本口径复算股票级损益归因。
+
+    买入 ``总成本`` 已含买入费用，卖出 ``卖出净金额`` 已扣除卖出费用。
+    因此费用只在成交账本中计入一次。执行器部分卖出时按当时持仓总成本
+    比例结转，本函数必须使用同一口径，不能改用 FIFO。
+    """
+    # An attribution ledger must contain each actual execution exactly once.
+    if "execution_id" in trades.columns:
+        execution_ids = trades["execution_id"].astype(str).str.strip()
+        duplicate_ids = execution_ids[execution_ids.ne("") & execution_ids.duplicated(keep=False)]
+        if not duplicate_ids.empty:
+            raise ValueError(f"重复 execution_id: {duplicate_ids.iloc[0]}")
+    position_qty = 0
+    remaining_cost = 0.0
+    realized = 0.0
+    ordered = trades.sort_values(
+        [column for column in ("时间", "execution_id") if column in trades.columns],
+        kind="mergesort",
+    ) if len(trades) else trades
+    for _, trade in ordered.iterrows():
+        kind = str(trade.get("类型", ""))
+        qty = int(float(trade.get("成交数量", 0) or 0))
+        if qty <= 0:
+            continue
+        if kind == "买入":
+            position_qty += qty
+            remaining_cost += float(trade.get("总成本", 0) or 0)
+        elif kind == "卖出":
+            if qty > position_qty:
+                raise ValueError("股票归因账本卖出数量超过可用持仓")
+            sold_cost = remaining_cost * qty / max(position_qty, 1)
+            realized += float(trade.get("卖出净金额", 0) or 0) - sold_cost
+            position_qty -= qty
+            remaining_cost -= sold_cost
+    # Without executions this stock has no attributable capital or PnL.
+    unrealized = 0.0 if not len(ordered) else float(ending_value) - remaining_cost
+    contribution = realized + unrealized
+    return {
+        "持仓数量": position_qty,
+        "持仓成本": remaining_cost,
+        "已实现损益": realized,
+        "未实现损益": unrealized,
+        "累计损益贡献": contribution,
+    }
+
+
+def _写入股票归因过程(process, trades):
+    """用股票自身成交和市值补全过程归因，禁止写入组合现金或组合权益。"""
+    if process.empty:
+        return process
+    process = process.copy()
+    trade_times = pd.to_datetime(trades.get("时间", pd.Series(dtype=str)), errors="coerce")
+    trade_cursor = 0
+    ordered = trades.assign(_归因时间=trade_times).sort_values(
+        ["_归因时间", "execution_id"] if "execution_id" in trades.columns else ["_归因时间"],
+        kind="mergesort",
+    ).reset_index(drop=True)
+    position_qty = 0
+    remaining_cost = 0.0
+    realized = 0.0
+    process_times = pd.to_datetime(process.get("时间", process.get("日期")), errors="coerce")
+    values = []
+    for index, row in process.iterrows():
+        timestamp = process_times.loc[index]
+        while trade_cursor < len(ordered):
+            trade_time = ordered.iloc[trade_cursor]["_归因时间"]
+            if pd.notna(timestamp) and pd.notna(trade_time) and trade_time > timestamp:
+                break
+            trade = ordered.iloc[trade_cursor]
+            qty = int(float(trade.get("成交数量", 0) or 0))
+            if trade.get("类型") == "买入":
+                position_qty += qty
+                remaining_cost += float(trade.get("总成本", 0) or 0)
+            elif trade.get("类型") == "卖出" and qty > 0 and qty <= position_qty:
+                sold_cost = remaining_cost * qty / max(position_qty, 1)
+                realized += float(trade.get("卖出净金额", 0) or 0) - sold_cost
+                position_qty -= qty
+                remaining_cost -= sold_cost
+            trade_cursor += 1
+        market_value = float(row.get("持仓市值", 0) or 0)
+        unrealized = market_value - remaining_cost
+        values.append((remaining_cost, realized, unrealized, realized + unrealized))
+    process[["持仓成本", "已实现损益", "未实现损益", "累计损益贡献"]] = values
+    process["收益贡献率"] = process["累计损益贡献"]
+    # 这些字段在共享账户中属于组合事实，股票过程不得保留伪账户数值。
+    for field in ("当前现金", "权益"):
+        if field in process:
+            process[field] = None
+    return process
+
+
+def _整理股票结果(session, account, initial_capital, config_snapshot, elapsed):
     executor = session["执行器"]
     data = session["数据"]
     result = executor.获取结果(data.iloc[-1])
@@ -77,9 +169,35 @@ def _整理股票结果(session, initial_capital, config_snapshot, elapsed):
     pnl = pd.to_numeric(
         sells.get("盈亏比例", pd.Series(dtype=float)), errors="coerce"
     ).dropna()
+    shared_multi = bool(session["运行参数"].get("共享账户模式")) and int(session["运行参数"].get("共享股票数量", 1)) > 1
+    ending_value = float(result.get("期末持仓市值", 0) or 0)
+    attribution = _股票归因(trades, ending_value)
     process_equity = pd.to_numeric(
         result["持仓过程"].get("权益", pd.Series(dtype=float)), errors="coerce"
     ).dropna()
+    result.update({
+        "实际成交数": len(trades),
+        "拒绝数": sum(1 for row in account.审批记录
+                    if str(row.get("股票代码")) == str(session["股票代码"])
+                    and int(row.get("成交股数", 0) or 0) <= 0),
+        "已实现损益": round(attribution["已实现损益"], 8),
+        "未实现损益": round(attribution["未实现损益"], 8),
+        "累计损益贡献": round(attribution["累计损益贡献"], 8),
+        "期末股数": int(attribution["持仓数量"]),
+        "期末持仓市值": round(ending_value, 8),
+        "收益贡献率": round(attribution["累计损益贡献"] / initial_capital, 12) if initial_capital else 0.0,
+        "指标层级": "股票归因" if shared_multi else "单股账户",
+        "股票级不可用": shared_multi,
+    })
+    if shared_multi:
+        result["持仓过程"] = _写入股票归因过程(result["持仓过程"], trades)
+        result["持仓过程"]["收益贡献率"] /= initial_capital if initial_capital else 1.0
+        result["最终现金"] = None
+        result["最终权益"] = None
+        result["总收益率"] = None
+        result["最大回撤"] = None
+        result["持仓过程"]["当前现金"] = None
+        result["持仓过程"]["权益"] = None
     result.update({
         "股票代码": session["股票代码"],
         "股票名称": 获取股票名称(session["股票代码"]),
@@ -90,11 +208,11 @@ def _整理股票结果(session, initial_capital, config_snapshot, elapsed):
         "卖出次数": len(sells),
         "胜率": float((pnl > 0).mean() * 100) if len(pnl) else 0.0,
         "平均盈亏": float(pnl.mean() * 100) if len(pnl) else 0.0,
-        "最大回撤": float(
+        "最大回撤": None if shared_multi else float(
             ((process_equity.cummax() - process_equity) / process_equity.cummax()).max() * 100
         ) if len(process_equity) else 0.0,
         "总收益率": (result["最终权益"] - initial_capital) / initial_capital * 100
-        if initial_capital else 0.0,
+        if initial_capital and result.get("最终权益") is not None else None,
         "盈亏比": float(pnl[pnl > 0].sum() / abs(pnl[pnl < 0].sum()))
         if len(pnl[pnl < 0]) and pnl[pnl < 0].sum() else None,
         "配置快照": config_snapshot,
@@ -187,7 +305,8 @@ def 运行共享账户回测(
     for stock in stocks:
         data, _, _, _ = 准备回测数据(stock, start, end, config_dir)
         if data is None:
-            errors.append({"股票代码": stock, "股票名称": 获取股票名称(stock), "错误": "无可用数据或数据不足100行"})
+            errors.append({"股票代码": stock, "股票名称": 获取股票名称(stock),
+                           "错误代码": "INSUFFICIENT_DATA", "错误": "无可用数据或数据不足100行"})
             if progress_callback:
                 progress_callback(
                     phase="加载股票数据", completed=len(sessions) + len(errors),
@@ -198,6 +317,7 @@ def 运行共享账户回测(
             "流动性上限比例": liquidity_limit,
             "多股资金池模式": True,
             "共享账户模式": True,
+            "共享股票数量": len(stocks),
             "允许部分成交": bool(allow_partial_fill),
         }
         executor = 规则执行器(
@@ -483,9 +603,20 @@ def 运行共享账户回测(
     elapsed = perf_counter() - started
     snapshot = _读取配置快照(config_dir)
     results = [
-        _整理股票结果(session, capital, snapshot, elapsed)
+        _整理股票结果(session, account, capital, snapshot, elapsed)
         for session in sessions.values()
     ]
+    portfolio_pnl = float(account.权益() - account.初始资金)
+    contribution_total = float(sum(
+        result.get("累计损益贡献", 0.0) or 0.0 for result in results
+    ))
+    reconciliation = {
+        "组合总损益": round(portfolio_pnl, 8),
+        "股票贡献合计": round(contribution_total, 8),
+        "对账差额": round(contribution_total - portfolio_pnl, 8),
+        "对账容差": 0.01,
+        "对账状态": "PASS" if abs(contribution_total - portfolio_pnl) <= 0.01 else "FAIL",
+    }
     final_live = {
         "已处理时间点": len(curve),
         "时间点总数": len(timestamps),
@@ -532,4 +663,5 @@ def 运行共享账户回测(
         "耗时": elapsed,
         "stopped": stopped,
         "live": final_live,
+        "组合损益对账": reconciliation,
     }

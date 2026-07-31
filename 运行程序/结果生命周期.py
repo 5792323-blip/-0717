@@ -10,6 +10,7 @@ CORE_FILES = {
     "运行清单.json", "可信度审计.json", "多股回测结果.json",
     "交互回测报告.html", "多股策略决策回放.html",
     "组合成交审计.csv", "交易明细.csv", "持仓过程.csv", "回测摘要.txt",
+    "股票池资格审计.json",
 }
 
 
@@ -44,15 +45,37 @@ def 目录状态(run_dir):
     return {"run_id": data.get("run_id", root.name), "locked": bool(data.get("locked")), "字节数": total, "文件数": len(files), "文件": files}
 
 
-def 清理可重建深度数据(run_dir, confirm=False):
-    root = Path(run_dir).resolve()
+def 预览清理(run_dir):
+    root = Path(run_dir).absolute()
     _, data = _manifest(root)
+    if not data:
+        raise ValueError("结果目录缺少运行清单")
+    targets = []
+    for path in root.rglob("*"):
+        if path.is_file() and path.name not in CORE_FILES and (
+            path.name in {"回放行情.csv.gz", "策略决策回放.html"} or
+            path.parts[-2:] == ("checkpoint", "latest.json")
+        ):
+            targets.append(str(path.relative_to(root)))
+    return {"run_id": data.get("run_id", root.name), "locked": bool(data.get("locked")), "删除文件": targets, "删除数量": len(targets), "提示": "删除后无法完整重放决策链" if targets else "无可清理深度数据"}
+
+
+def 清理可重建深度数据(run_dir, confirm=False):
+    root = Path(run_dir)
+    if root.is_symlink():
+        raise ValueError("结果目录不能是符号链接")
+    root = root.absolute()
+    _, data = _manifest(root)
+    if not data:
+        raise ValueError("结果目录缺少运行清单")
     if data.get("locked"):
         raise PermissionError("结果已锁定，不能清理")
     if not confirm:
         raise ValueError("清理操作需要 confirm=True")
     removed = []
     for path in root.rglob("*"):
+        if path.is_symlink():
+            raise ValueError("结果目录包含符号链接，拒绝清理")
         if not path.is_file() or path.name in CORE_FILES:
             continue
         if path.name in {"回放行情.csv.gz", "策略决策回放.html"} or path.parts[-2:] == ("checkpoint", "latest.json"):

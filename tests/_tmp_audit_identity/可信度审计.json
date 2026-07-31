@@ -1,0 +1,99 @@
+{
+  "schema_version": "1.0",
+  "overall_status": "WARNING",
+  "can_be_baseline": false,
+  "checks": [
+    {
+      "check_id": "run_manifest",
+      "name": "运行清单完整",
+      "status": "PASS"
+    },
+    {
+      "check_id": "trade_evidence",
+      "name": "交易证据文件",
+      "status": "PASS",
+      "files": 2
+    },
+    {
+      "check_id": "event_ids",
+      "name": "交易生命周期编号",
+      "status": "PASS",
+      "missing_fields": []
+    },
+    {
+      "check_id": "duplicate_execution",
+      "name": "重复成交检查",
+      "status": "PASS",
+      "failed_count": 0
+    },
+    {
+      "check_id": "valid_execution_price",
+      "name": "成交价格有效",
+      "status": "PASS",
+      "failed_count": 0
+    },
+    {
+      "check_id": "fee_coverage",
+      "name": "费用记录覆盖",
+      "status": "PASS",
+      "recorded_trades": 2,
+      "missing_trades": 0
+    },
+    {
+      "check_id": "trade_ledger",
+      "name": "逐笔成交账务",
+      "status": "PASS",
+      "failed_count": 0,
+      "failures": [],
+      "ending_inventory": {
+        "600118": 100,
+        "600519": 100
+      }
+    },
+    {
+      "check_id": "approval_trade_reconciliation",
+      "name": "审批成交对账",
+      "status": "PASS",
+      "approval_filled_quantity": 200.0,
+      "trade_quantity": 200.0,
+      "approval_rows": 2,
+      "trade_rows": 2
+    },
+    {
+      "check_id": "approval_lifecycle_reconciliation",
+      "name": "审批生命周期逐笔关联",
+      "status": "PASS",
+      "failed_rows": [],
+      "failed_count": 0
+    },
+    {
+      "check_id": "approval_cash_ledger",
+      "name": "审批现金逐笔守恒",
+      "status": "PASS",
+      "failed_rows": [],
+      "failed_count": 0
+    },
+    {
+      "check_id": "approval_position_ledger",
+      "name": "审批持仓逐笔守恒",
+      "status": "PASS",
+      "failed_rows": [],
+      "failed_count": 0
+    },
+    {
+      "check_id": "cash_conservation",
+      "name": "资金守恒",
+      "status": "NOT_RUN",
+      "checked_count": 0,
+      "curve_points": 0,
+      "failed_count": 0
+    },
+    {
+      "check_id": "lookahead",
+      "name": "未来数据检查",
+      "status": "PASS",
+      "checked_count": 2,
+      "failed_count": 0
+    }
+  ]
+}

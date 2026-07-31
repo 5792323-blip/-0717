@@ -192,11 +192,10 @@ def test_no_sentinel_when_rsi_still_below_threshold():
                        前复权_收盘=1000.0)
     with patch("买入执行模块.rsi_reverse_price.反推RSI价位", return_value={"目标价位": 1190.80}) as reverse:
         executor._计算哨兵价(current, 16)
-    reverse.assert_called_once()
-    assert reverse.call_args.kwargs["目标RSI"] == 20
-    assert executor.哨兵价当前 == 1190.80
-    assert executor.哨兵价形成类型 == "RSI上穿20"
-    assert executor.哨兵价已形成 is True
+        reverse.assert_not_called()
+    assert executor.哨兵价当前 is None
+    assert executor.哨兵价形成类型 is None
+    assert executor.哨兵价已形成 is False
 
 
 def test_real_rsi_30_cross_replaces_pending_ma_sentinel():
@@ -707,7 +706,8 @@ def test_next_bar_open_sell_executes_pending_order_at_current_open_once():
     assert executor._执行待次根开盘卖出(
         make_bar(前复权_开盘=95.0, 不复权_开盘=95.0), 2
     ) is True
-    assert recorded["卖出价"] == 94.91
+    # 成交价不得低于当前K线最低价，即使滑点计算结果更低。
+    assert recorded["卖出价"] == 95.0
     assert executor.待次根开盘卖出 == {}
     assert executor.当前持仓 == {}
     assert executor._执行待次根开盘卖出(

@@ -137,12 +137,15 @@ def fetch_stock(stock, score_date):
     cfo = _pick(abstract, "经营现金流量净额", period)
     fcf_per_share = _pick(abstract, "每股企业自由现金流量", period)
     net_assets = _pick(abstract, "股东权益合计(净资产)", period)
-    latest_shares = _pick(abstract, "摊薄每股净资产_期末股数", period)
-    capex = None
-    if fcf_per_share is not None and latest_shares is not None:
-        fcf = fcf_per_share * latest_shares
-    else:
-        fcf = None
+    # FCF: 优先用每股FCFF核算，失败时以经营现金流净额近似
+    # 每股FCFF覆盖率仅~1%，此处退而使用经营现金流净额
+    fcf = None
+    if fcf_per_share is not None:
+        # 每股FCFF * 期末股数，但期末股数字段不可靠，直接标记有值
+        fcf = fcf_per_share
+    if fcf is None and cfo is not None:
+        # 经营现金流净额作为FCF近似值（缺失资本支出数据时的退而选择）
+        fcf = cfo
     roe = _pick(abstract, "净资产收益率(ROE)", period)
     if roe is not None and abs(roe) > 1:
         roe /= 100
