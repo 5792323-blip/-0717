@@ -16,6 +16,30 @@ import json
 from datetime import datetime
 
 
+def 规范化成交时间(时间=None, 日期=None):
+    """校验成交时间，并在写入边界将仅有日期的输入规范为时间。"""
+    时间缺失 = 时间 is None or 时间 == "" or pd.isna(时间)
+    日期缺失 = 日期 is None or 日期 == "" or pd.isna(日期)
+    if not 时间缺失:
+        时间值 = str(时间).strip()
+        时间戳 = pd.to_datetime(时间值, errors="coerce")
+        if pd.isna(时间戳):
+            raise ValueError("成交时间无效")
+        if not 日期缺失:
+            日期戳 = pd.to_datetime(日期, errors="coerce")
+            if pd.isna(日期戳):
+                raise ValueError("成交时间或日期无效")
+            if 时间戳.date() != 日期戳.date():
+                raise ValueError("成交时间与日期冲突")
+        return 时间值
+    if 日期缺失:
+        raise ValueError("成交时间无效")
+    日期值 = str(日期).strip()
+    if pd.isna(pd.to_datetime(日期值, errors="coerce")):
+        raise ValueError("成交时间或日期无效")
+    return 日期值
+
+
 class 交易记录器:
     """
     交易记录器 — 记录整个交易过程
@@ -99,6 +123,7 @@ class 交易记录器:
                成交数量=None, 交易费用=None, 总成本=None, 持仓组ID=None,
                网格级别=0, 加仓后总持仓=None):
         """记录一笔买入"""
+        成交时间 = 规范化成交时间(时间, 日期)
         self.买入序号 += 1
         self.意图序号 += 1
         self.订单序号 += 1
@@ -119,7 +144,7 @@ class 交易记录器:
             "序号": self.买入序号,
             "持仓组ID": 持仓组ID,
             "网格级别": int(网格级别 or 0),
-            "时间": str(时间).strip() if str(时间).strip() else f"{日期}".strip(),
+            "时间": 成交时间,
             "类型": "买入",
             "买入价": 买入价,
             "信号类型": 信号类型,
@@ -170,6 +195,7 @@ class 交易记录器:
                站岗价=None, ATR缓冲价=None, RSI峰值=None, 日期='', 时间='',
                仓位=None, 成交数量=None, 持仓组ID=None):
         """记录一笔卖出"""
+        成交时间 = 规范化成交时间(时间, 日期)
         self.意图序号 += 1
         self.订单序号 += 1
         self.成交序号 += 1
@@ -180,7 +206,7 @@ class 交易记录器:
             "rejection_id": None,
             "序号": self.买入序号,
             "持仓组ID": 持仓组ID,
-            "时间": str(时间).strip() if str(时间).strip() else f"{日期}".strip(),
+            "时间": 成交时间,
             "类型": "卖出",
             "卖出价": 卖出价,
             "卖出原因": 卖出原因,

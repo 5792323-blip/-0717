@@ -14,6 +14,7 @@ import yaml
 
 from 回测引擎.backtest_engine import 准备回测数据
 from 策略引擎.交易账户 import 交易账户
+from 策略引擎.交易记录器 import 规范化成交时间
 from 策略引擎.规则执行器 import 规则执行器
 from 数据模块.股票名称 import 获取股票名称
 
@@ -74,6 +75,8 @@ def _股票归因(trades, ending_value):
     因此费用只在成交账本中计入一次。执行器部分卖出时按当时持仓总成本
     比例结转，本函数必须使用同一口径，不能改用 FIFO。
     """
+    for _, trade in trades.iterrows():
+        规范化成交时间(trade.get("时间"))
     # An attribution ledger must contain each actual execution exactly once.
     if "execution_id" in trades.columns:
         execution_ids = trades["execution_id"].astype(str).str.strip()
@@ -116,6 +119,8 @@ def _股票归因(trades, ending_value):
 
 def _写入股票归因过程(process, trades):
     """用股票自身成交和市值补全过程归因，禁止写入组合现金或组合权益。"""
+    for _, trade in trades.iterrows():
+        规范化成交时间(trade.get("时间"))
     if process.empty:
         return process
     process = process.copy()
