@@ -192,6 +192,39 @@ def test_date_only_ledger_is_rejected_by_attribution_layer():
         _写入股票归因过程(pd.DataFrame([{"时间": "2025-01-03", "持仓市值": 0}]), trades)
 
 
+def test_attribution_rejects_conflicting_trade_time_and_date():
+    """归因层不得接受日历日期与规范成交时间冲突的账本行。"""
+    trades = pd.DataFrame([{
+        "时间": "2025-01-02 09:31", "日期": "2025-01-03",
+        "类型": "买入", "成交数量": 100, "总成本": 1001.0,
+        "交易费用": 1.0, "execution_id": "X-CONFLICT",
+    }])
+
+    with pytest.raises((AssertionError, ValueError), match="日期|时间|冲突"):
+        _股票归因(trades, ending_value=1000)
+    with pytest.raises((AssertionError, ValueError), match="日期|时间|冲突"):
+        _写入股票归因过程(
+            pd.DataFrame([{"时间": "2025-01-03", "持仓市值": 0}]),
+            trades,
+        )
+
+
+def test_attribution_accepts_consistent_trade_time_and_date():
+    trades = pd.DataFrame([{
+        "时间": "2025-01-02 09:31", "日期": "2025-01-02",
+        "类型": "买入", "成交数量": 100, "总成本": 1001.0,
+        "交易费用": 1.0, "execution_id": "X-CONSISTENT",
+    }])
+
+    result = _股票归因(trades, ending_value=1000)
+    assert result["持仓数量"] == 100
+    process = _写入股票归因过程(
+        pd.DataFrame([{"时间": "2025-01-02 09:31", "持仓市值": 1000}]),
+        trades,
+    )
+    assert process.loc[0, "持仓成本"] == pytest.approx(1001.0)
+
+
 def test_valid_buy_and_sell_still_have_one_timestamped_execution_each():
     recorder = 交易记录器()
     recorder.记录本根K线(0, "2025-01-02", "09:31", 10, 10, 30, 30, 1)
