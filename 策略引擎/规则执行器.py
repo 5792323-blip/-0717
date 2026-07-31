@@ -2478,13 +2478,18 @@ class 规则执行器:
 
     def _获取涨跌停比例(self, K线数据):
         """按板块和日期确定涨跌停比例，配置值作为主板默认值。"""
-        股票代码 = str(K线数据.get('股票代码', ''))
+        股票代码 = str(K线数据.get('股票代码', '')).strip().upper()
+        for prefix in ('SH_', 'SZ_', 'BJ_'):
+            if 股票代码.startswith(prefix):
+                股票代码 = 股票代码[len(prefix):]
+                break
         日期 = str(K线数据.get('日期', ''))[:10]
-        if 股票代码.startswith('688'):
+        # 科创板 688/689 统一执行 20% 涨跌停规则。
+        if 股票代码.startswith(('688', '689')):
             return 0.20
         if 股票代码.startswith(('300', '301')) and 日期 >= '2020-08-24':
             return 0.20
-        if 股票代码.startswith(('4', '8')):
+        if 股票代码.startswith(('4', '8', '9')):
             return 0.30
         return float(getattr(self, '涨跌停比例', 0.10))
 

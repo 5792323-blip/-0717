@@ -393,6 +393,10 @@ def test_limit_ratio_uses_market_and_date():
     executor.涨跌停比例 = 0.10
     assert executor._获取涨跌停比例(make_bar(股票代码="600519", 日期="2024-01-01")) == 0.10
     assert executor._获取涨跌停比例(make_bar(股票代码="688001", 日期="2024-01-01")) == 0.20
+    assert executor._获取涨跌停比例(make_bar(股票代码="689009", 日期="2024-01-01")) == 0.20
+    assert executor._获取涨跌停比例(make_bar(股票代码="SH_689009", 日期="2024-01-01")) == 0.20
+    assert executor._获取涨跌停比例(make_bar(股票代码="SZ_300001", 日期="2024-08-24")) == 0.20
+    assert executor._获取涨跌停比例(make_bar(股票代码="BJ_920570", 日期="2024-01-01")) == 0.30
     assert executor._获取涨跌停比例(make_bar(股票代码="300001", 日期="2020-08-21")) == 0.10
     assert executor._获取涨跌停比例(make_bar(股票代码="300001", 日期="2020-08-24")) == 0.20
 
