@@ -61,6 +61,7 @@ class 交易记录器:
         self.意图序号 = 0
         self.订单序号 = 0
         self.成交序号 = 0
+        self._execution_scope = None
         
         # 当前交易的临时标记
         self.当前哨兵价 = None
@@ -75,6 +76,30 @@ class 交易记录器:
         self.信号K线_收盘 = None
         self.信号K线_最高 = None
         self.信号K线_最低 = None
+
+    def 绑定成交作用域(self, scope):
+        self._execution_scope = scope
+        scope.setdefault("recorders", set()).add(self)
+
+    def 预留成交ID(self):
+        """在账户状态变化前预留当前作用域内唯一的成交 ID。"""
+        if self._execution_scope is None:
+            self._execution_scope = {"execution_ids": set(), "recorders": {self}}
+        scope = self._execution_scope
+        candidate_number = self.成交序号 + 1
+        candidate = f"X{candidate_number:08d}"
+        if candidate in scope["execution_ids"]:
+            self.成交序号 = max(
+                (recorder.成交序号 for recorder in scope["recorders"] if recorder is not self),
+                default=self.成交序号,
+            )
+            raise ValueError(f"重复 execution_id: {candidate}")
+        scope["execution_ids"].add(candidate)
+        self.成交序号 = candidate_number
+        for recorder in scope["recorders"]:
+            if recorder is not self:
+                recorder.成交序号 = max(recorder.成交序号, candidate_number)
+        return candidate
     
     def 记录本根K线(self, K线索引, 日期, 时间, 前复权收盘, 不复权收盘, 
                    RSI值, RSI_MA值, ATR值):
@@ -121,13 +146,14 @@ class 交易记录器:
     def 记录买入(self, 买入价, 信号类型, 信号质量分, 仓位, 
                哨兵价, 哨兵价触发价, 前复权买入价=None, 前复权成交价=None, 日期='', 时间='',
                成交数量=None, 交易费用=None, 总成本=None, 持仓组ID=None,
-               网格级别=0, 加仓后总持仓=None):
+               网格级别=0, 加仓后总持仓=None, execution_id=None):
         """记录一笔买入"""
         成交时间 = 规范化成交时间(时间, 日期)
         self.买入序号 += 1
         self.意图序号 += 1
         self.订单序号 += 1
-        self.成交序号 += 1
+        if execution_id is None:
+            execution_id = self.预留成交ID()
         if 持仓组ID is None:
             self.持仓组序号 += 1
             持仓组ID = f"G{self.持仓组序号:06d}"
@@ -139,7 +165,7 @@ class 交易记录器:
         买入记录 = {
             "intent_id": f"I{self.意图序号:08d}",
             "order_id": f"O{self.订单序号:08d}",
-            "execution_id": f"X{self.成交序号:08d}",
+            "execution_id": execution_id,
             "rejection_id": None,
             "序号": self.买入序号,
             "持仓组ID": 持仓组ID,
@@ -193,16 +219,17 @@ class 交易记录器:
 
     def 记录卖出(self, 卖出价, 卖出原因, 盈亏比例, 持有K线数,
                站岗价=None, ATR缓冲价=None, RSI峰值=None, 日期='', 时间='',
-               仓位=None, 成交数量=None, 持仓组ID=None):
+               仓位=None, 成交数量=None, 持仓组ID=None, execution_id=None):
         """记录一笔卖出"""
         成交时间 = 规范化成交时间(时间, 日期)
         self.意图序号 += 1
         self.订单序号 += 1
-        self.成交序号 += 1
+        if execution_id is None:
+            execution_id = self.预留成交ID()
         卖出记录 = {
             "intent_id": f"I{self.意图序号:08d}",
             "order_id": f"O{self.订单序号:08d}",
-            "execution_id": f"X{self.成交序号:08d}",
+            "execution_id": execution_id,
             "rejection_id": None,
             "序号": self.买入序号,
             "持仓组ID": 持仓组ID,

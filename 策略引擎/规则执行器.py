@@ -11,6 +11,7 @@ import os
 import yaml
 import pandas as pd
 import numpy as np
+from uuid import uuid4
 from 策略引擎.反推因子 import 智能反推
 from 模块系统 import 模块开关管理器
 from 买入执行模块.entry_timing import (
@@ -262,6 +263,17 @@ class 规则执行器:
         初始资金 = self.仓位配置.get('基准仓位', {}).get('初始资金', 20000000)
         self.账户 = 账户 or 单股账户(初始资金)
         self.账户视图 = self.账户.股票视图(股票代码)
+        requested_run_id = self.运行参数.get("run_id")
+        scope = getattr(self.账户, "_execution_scope", None)
+        if scope is None or (requested_run_id and scope["run_id"] != requested_run_id):
+            scope = {
+                "run_id": requested_run_id or uuid4().hex,
+                "account_id": self.运行参数.get("account_id") or uuid4().hex,
+                "execution_ids": set(),
+                "recorders": set(),
+            }
+            self.账户._execution_scope = scope
+        self.交易记录器.绑定成交作用域(scope)
         self.已买入K线数 = 0
         # LightGBM预测器
         try:
@@ -1690,6 +1702,11 @@ class 规则执行器:
             return False
         
         # 记录持仓（支持加仓：同一股票再次买入视为增持，不覆盖原持仓）
+        try:
+            execution_id = self.交易记录器.预留成交ID()
+        except ValueError:
+            self.本根决策 = {}
+            raise
         if 股票代码 in self.当前持仓:
             原持仓 = self.当前持仓[股票代码]
             原股数 = int(原持仓.get('股数', 0) or 0)
@@ -1776,6 +1793,7 @@ class 规则执行器:
             持仓组ID=持仓组ID,
             网格级别=网格级别,
             加仓后总持仓=加仓后总持仓,
+            execution_id=execution_id,
         )
         self.本根决策["决策记录"]["买入"].update({
             "成交价": 买入价,
@@ -2629,6 +2647,7 @@ class 规则执行器:
         卖出净金额 = 卖出金额 - 卖出费用
         本次成本 = 持仓.get('总成本', 持仓['成本']) * 卖出股数 / 原股数
         实际盈亏比例 = (卖出净金额 - 本次成本) / max(本次成本, 1)
+        execution_id = self.交易记录器.预留成交ID()
         
         self.当前现金 += 卖出净金额
         # ★ 修复: 安全删除持仓，防止键值不匹配
@@ -2659,6 +2678,7 @@ class 规则执行器:
             仓位=本次成本,
             成交数量=卖出股数,
             持仓组ID=持仓.get('持仓组ID'),
+            execution_id=execution_id,
         )
         self.本根决策["决策记录"]["卖出"].update({
             "成交价": 卖出价,
