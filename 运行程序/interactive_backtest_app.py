@@ -2642,6 +2642,9 @@ def 构建默认表单():
         for key, value in shared.items():
             form[f"{prefix}_{key}"] = value
         form.update(构建模块参数默认值(config, prefix))
+        form[f"{prefix}_entry_timing"] = "precomputed_stop_entry"
+        form[f"{prefix}_switch_核心模块_same_bar_entry"] = False
+        form[f"{prefix}_switch_核心模块_next_bar_entry"] = True
     # Multi-stock defaults use a conservative shared portfolio budget.
     form.update({
         "multi_capital": 10_000_000,
