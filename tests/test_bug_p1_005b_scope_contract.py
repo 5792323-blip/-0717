@@ -388,3 +388,123 @@ def test_reusing_a_successfully_submitted_reserved_id_is_rejected_atomically(mon
     assert after == before
     assert caught is not None
     assert any(token in str(caught).lower() for token in ("execution", "重复", "唯一"))
+
+
+def _approval_state(account):
+    return {
+        "现金": deepcopy(account._last_approval_cash),
+        "持仓": deepcopy(account._last_approval_positions),
+    }
+
+
+def test_buy_failure_restores_calling_decisions_and_recent_decision(monkeypatch):
+    account, executor, _ = _shared_executors(monkeypatch)
+    decision = {"marker": "BUY-CALL", "nested": {"values": [1, 2, 3]}}
+    recent = {"marker": "BUY-RECENT", "nested": {"values": [9]}}
+    executor.本根决策 = deepcopy(decision)
+    executor._最近成功决策 = deepcopy(recent)
+    before = _shared_state_snapshot(account, executor, executor)
+    recorder = executor.交易记录器
+
+    def fail_record(*args, **kwargs):
+        raise RuntimeError("injected buy decision rollback failure")
+
+    monkeypatch.setattr(recorder, "记录买入", fail_record)
+    with pytest.raises(RuntimeError, match="injected buy decision rollback failure"):
+        _real_buy(executor, "600001")
+
+    assert executor.本根决策 == decision
+    assert executor._最近成功决策 == recent
+    assert executor.本根决策 != {}
+    assert executor.本根决策 != executor._最近成功决策
+    assert _shared_state_snapshot(account, executor, executor) == before
+
+
+def test_sell_failure_restores_calling_decisions_and_recent_decision(monkeypatch):
+    account, executor, _ = _shared_executors(monkeypatch)
+    assert _real_buy(executor, "600001") is True
+    decision = {"marker": "SELL-CALL", "nested": {"values": [4, 5]}}
+    recent = {"marker": "SELL-RECENT", "nested": {"values": [8, 9]}}
+    executor.本根决策 = deepcopy(decision)
+    executor._最近成功决策 = deepcopy(recent)
+    before = _shared_state_snapshot(account, executor, executor)
+    recorder = executor.交易记录器
+
+    def fail_record(*args, **kwargs):
+        raise RuntimeError("injected sell decision rollback failure")
+
+    monkeypatch.setattr(recorder, "记录卖出", fail_record)
+    with pytest.raises(RuntimeError, match="injected sell decision rollback failure"):
+        _real_sell(executor, "600001")
+
+    assert executor.本根决策 == decision
+    assert executor._最近成功决策 == recent
+    assert executor.本根决策 != executor._最近成功决策
+    assert _shared_state_snapshot(account, executor, executor) == before
+
+
+def test_buy_approval_internal_snapshot_rolls_back_after_late_failure(monkeypatch):
+    account, executor, _ = _shared_executors(monkeypatch)
+    account._last_approval_cash = 12345.67
+    account._last_approval_positions = {"sentinel": 7}
+    before_account = _approval_state(account)
+    before = _shared_state_snapshot(account, executor, executor)
+    original_approval = executor._记录账户审批
+    observed = {}
+
+    def fail_after_approval(**row):
+        original_approval(**row)
+        observed["state"] = _approval_state(account)
+        raise RuntimeError("injected buy post-approval failure")
+
+    monkeypatch.setattr(executor, "_记录账户审批", fail_after_approval)
+    with pytest.raises(RuntimeError, match="injected buy post-approval failure"):
+        _real_buy(executor, "600001")
+
+    assert observed["state"] != before_account
+    assert observed["state"]["持仓"] != before_account["持仓"]
+    assert _shared_state_snapshot(account, executor, executor) == before
+    assert _approval_state(account) == before_account
+
+
+def test_sell_approval_internal_snapshot_rolls_back_after_late_failure(monkeypatch):
+    account, executor, _ = _shared_executors(monkeypatch)
+    assert _real_buy(executor, "600001") is True
+    account._last_approval_cash = 23456.78
+    account._last_approval_positions = {"sentinel": 8}
+    before_account = _approval_state(account)
+    before = _shared_state_snapshot(account, executor, executor)
+    original_approval = executor._记录账户审批
+    observed = {}
+
+    def fail_after_approval(**row):
+        original_approval(**row)
+        observed["state"] = _approval_state(account)
+        raise RuntimeError("injected sell post-approval failure")
+
+    monkeypatch.setattr(executor, "_记录账户审批", fail_after_approval)
+    with pytest.raises(RuntimeError, match="injected sell post-approval failure"):
+        _real_sell(executor, "600001")
+
+    assert observed["state"] != before_account
+    assert observed["state"]["持仓"] != before_account["持仓"]
+    assert _shared_state_snapshot(account, executor, executor) == before
+    assert _approval_state(account) == before_account
+
+
+def test_legal_buy_and_sell_update_decisions_approval_and_execution_normally(monkeypatch):
+    account, executor, _ = _shared_executors(monkeypatch)
+    initial_approval = _approval_state(account)
+    assert _real_buy(executor, "600001") is True
+    assert executor.本根决策
+    assert executor._最近成功决策 == executor.本根决策
+    after_buy_approval = _approval_state(account)
+    assert after_buy_approval != initial_approval
+    assert len(executor.交易记录器.交易列表) == 1
+
+    assert _real_sell(executor, "600001") is True
+    assert executor.本根决策["决策记录"]["卖出"]["成交数量"] > 0
+    assert _approval_state(account) != after_buy_approval
+    rows = executor.交易记录器.交易列表
+    assert len(rows) == 2
+    assert rows[0]["execution_id"] != rows[1]["execution_id"]
