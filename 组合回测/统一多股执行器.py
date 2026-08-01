@@ -68,6 +68,23 @@ def _读取配置快照(config_dir):
     return snapshot
 
 
+def _校验execution_id账本(trades):
+    """校验成交账本的 execution_id 身份，不转换原始值。"""
+    if trades.empty:
+        return
+    if "execution_id" not in trades.columns:
+        raise ValueError("缺少 execution_id")
+    seen = set()
+    for execution_id in trades["execution_id"]:
+        if not isinstance(execution_id, str):
+            raise ValueError("execution_id 必须是字符串")
+        if not execution_id.strip():
+            raise ValueError("execution_id 不能为空")
+        if execution_id in seen:
+            raise ValueError(f"重复 execution_id: {execution_id}")
+        seen.add(execution_id)
+
+
 def _股票归因(trades, ending_value):
     """按执行器的加权剩余成本口径复算股票级损益归因。
 
@@ -84,12 +101,7 @@ def _股票归因(trades, ending_value):
             时间,
             None if pd.isna(日期) else 日期,
         )
-    # An attribution ledger must contain each actual execution exactly once.
-    if "execution_id" in trades.columns:
-        execution_ids = trades["execution_id"].astype(str).str.strip()
-        duplicate_ids = execution_ids[execution_ids.ne("") & execution_ids.duplicated(keep=False)]
-        if not duplicate_ids.empty:
-            raise ValueError(f"重复 execution_id: {duplicate_ids.iloc[0]}")
+    _校验execution_id账本(trades)
     position_qty = 0
     remaining_cost = 0.0
     realized = 0.0
@@ -135,6 +147,7 @@ def _写入股票归因过程(process, trades):
             时间,
             None if pd.isna(日期) else 日期,
         )
+    _校验execution_id账本(trades)
     if process.empty:
         return process
     process = process.copy()
