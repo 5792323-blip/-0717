@@ -1382,6 +1382,10 @@ class 规则执行器:
                 "execution_ids": set(scope["execution_ids"]),
                 "pending_execution_ids": dict(scope.get("pending_execution_ids", {})),
                 "committed_execution_ids": set(scope.get("committed_execution_ids", set())),
+                "recorder_sequences": {
+                    recorder: recorder.成交序号
+                    for recorder in scope.get("recorders", set())
+                },
             },
         }
 
@@ -1412,6 +1416,8 @@ class 规则执行器:
             scope["execution_ids"] = set(snapshot["scope"]["execution_ids"])
             scope["pending_execution_ids"] = dict(snapshot["scope"]["pending_execution_ids"])
             scope["committed_execution_ids"] = set(snapshot["scope"]["committed_execution_ids"])
+            for recorder, sequence in snapshot["scope"]["recorder_sequences"].items():
+                recorder.成交序号 = sequence
 
     def _执行买入(self, *args, **kwargs):
         if not hasattr(self, "账户"):
