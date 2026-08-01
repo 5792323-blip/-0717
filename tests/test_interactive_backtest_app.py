@@ -4,7 +4,10 @@ import re
 import json
 from unittest.mock import patch
 
+import pandas as pd
 import yaml
+
+import 运行程序.interactive_backtest_app as app
 
 from 运行程序.interactive_backtest_app import (
     应用表单到配置, 应用, 构建默认表单, 构建工作台表单,
@@ -13,6 +16,102 @@ from 运行程序.interactive_backtest_app import (
     _保存回测检查点, 回测检查点, 提取组合基准指标, 修复旧版回放脚本,
     格式化可选百分比,
 )
+
+
+def _liquidity_frame(rows):
+    return pd.DataFrame(rows, columns=["date", "amount"])
+
+
+def _patch_liquidity_source(monkeypatch, frame):
+    monkeypatch.setitem(
+        app.指数基准配置["hs300"],
+        "benchmark_path",
+        "/tmp/nonexistent-hs300-liquidity.pkl",
+    )
+    monkeypatch.setattr(app.pd, "read_pickle", lambda path: frame.copy())
+
+
+def test_market_liquidity_missing_file_returns_template_safe_unavailable(monkeypatch):
+    monkeypatch.setitem(
+        app.指数基准配置["hs300"],
+        "benchmark_path",
+        "/tmp/definitely-missing-liquidity.pkl",
+    )
+
+    result = app.读取市场流动性观察()
+
+    assert isinstance(result, dict)
+    assert result["可用"] is False
+    assert result.get("数据", []) == []
+    json.dumps(result, allow_nan=False)
+
+
+def test_market_liquidity_empty_data_is_safe(monkeypatch):
+    _patch_liquidity_source(monkeypatch, _liquidity_frame([]))
+
+    result = app.读取市场流动性观察()
+
+    assert isinstance(result, dict)
+    assert result["可用"] is False
+    assert result.get("数据", []) == []
+    json.dumps(result, allow_nan=False)
+
+
+def test_market_liquidity_single_row_uses_finite_defaults(monkeypatch):
+    _patch_liquidity_source(
+        monkeypatch,
+        _liquidity_frame([("2025-01-03", 100_000_000)]),
+    )
+
+    result = app.读取市场流动性观察()
+
+    assert result["可用"] is True
+    assert result["变化率"] == 0
+    assert result["数据"]
+    assert all(pd.notna(item["值"]) and pd.notna(item["日期"]) for item in result["数据"])
+    json.dumps(result, allow_nan=False)
+
+
+def test_market_liquidity_nan_latest_change_never_reaches_template(monkeypatch):
+    _patch_liquidity_source(
+        monkeypatch,
+        _liquidity_frame([
+            ("2025-01-02", 100_000_000),
+            ("2025-01-03", float("nan")),
+        ]),
+    )
+
+    result = app.读取市场流动性观察()
+
+    assert result["可用"] is True
+    assert pd.notna(result["变化率"])
+    assert result["变化率"] == 0
+    assert result["方向"] in {"上升", "下降", "持平"}
+    assert "nan" not in json.dumps(result, ensure_ascii=False).lower()
+    json.dumps(result, allow_nan=False)
+
+
+def test_market_liquidity_filters_dirty_rows_and_uses_latest_date(monkeypatch):
+    _patch_liquidity_source(
+        monkeypatch,
+        _liquidity_frame([
+            ("2025-01-05", 300_000_000),
+            ("not-a-date", 999_000_000),
+            ("2025-01-03", None),
+            ("2025-01-04", 200_000_000),
+            ("2025-01-02", 100_000_000),
+        ]),
+    )
+
+    result = app.读取市场流动性观察()
+
+    assert result["可用"] is True
+    assert result["最新日期"] == "2025-01-05"
+    dates = [item["日期"] for item in result["数据"]]
+    assert dates == sorted(dates)
+    assert "not-a-date" not in dates
+    assert all(pd.notna(item["值"]) for item in result["数据"])
+    json.dumps(result, allow_nan=False)
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
