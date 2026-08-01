@@ -1371,6 +1371,10 @@ class 规则执行器:
                 "审批记录": deepcopy(self.账户.审批记录),
                 "审批统计": deepcopy(self.账户.审批统计),
                 "拒绝序号": self.账户.拒绝序号,
+                "last_approval_cash_exists": hasattr(self.账户, "_last_approval_cash"),
+                "last_approval_cash": getattr(self.账户, "_last_approval_cash", None),
+                "last_approval_positions_exists": hasattr(self.账户, "_last_approval_positions"),
+                "last_approval_positions": deepcopy(getattr(self.账户, "_last_approval_positions", None)),
             },
             "recorder": {key: copy_value(value) for key, value in self.交易记录器.__dict__.items()
                           if key != "_execution_scope"},
@@ -1393,6 +1397,14 @@ class 规则执行器:
         self.账户.审批统计.clear()
         self.账户.审批统计.update(snapshot["account"]["审批统计"])
         self.账户.拒绝序号 = snapshot["account"]["拒绝序号"]
+        if snapshot["account"]["last_approval_cash_exists"]:
+            self.账户._last_approval_cash = snapshot["account"]["last_approval_cash"]
+        elif hasattr(self.账户, "_last_approval_cash"):
+            del self.账户._last_approval_cash
+        if snapshot["account"]["last_approval_positions_exists"]:
+            self.账户._last_approval_positions = deepcopy(snapshot["account"]["last_approval_positions"])
+        elif hasattr(self.账户, "_last_approval_positions"):
+            del self.账户._last_approval_positions
         for key, value in snapshot["recorder"].items():
             setattr(self.交易记录器, key, value)
         scope = getattr(self.账户, "_execution_scope", None)
@@ -1411,14 +1423,6 @@ class 规则执行器:
             return result
         except Exception as error:
             self._回滚成交事务(snapshot)
-            self.本根决策 = {}
-            if "重复 execution_id" in str(error):
-                scope = self.账户._execution_scope
-                self.交易记录器.成交序号 = max(
-                    (recorder.成交序号 for recorder in scope["recorders"]
-                     if recorder is not self.交易记录器),
-                    default=self.交易记录器.成交序号,
-                )
             raise
 
     def _执行买入实现(self, 规则, K线数据, 当前索引, 当前RSI, 哨兵价=None,
@@ -2680,7 +2684,6 @@ class 规则执行器:
             return self._执行卖出实现(*args, **kwargs)
         except Exception:
             self._回滚成交事务(snapshot)
-            self.本根决策 = deepcopy(getattr(self, "_最近成功决策", {}))
             raise
 
     def _执行卖出实现(self, 持仓, 规则, 盈亏比例, K线数据, 触发价=None, 股票代码='600519', 卖出比例=1.0):

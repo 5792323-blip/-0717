@@ -94,10 +94,6 @@ class 交易记录器:
         candidate_number = self.成交序号 + 1
         candidate = f"X{candidate_number:08d}"
         if candidate in scope["execution_ids"]:
-            self.成交序号 = max(
-                (recorder.成交序号 for recorder in scope["recorders"] if recorder is not self),
-                default=self.成交序号,
-            )
             raise ValueError(f"重复 execution_id: {candidate}")
         scope["execution_ids"].add(candidate)
         scope.setdefault("pending_execution_ids", {})[candidate] = (self, self.成交序号)
