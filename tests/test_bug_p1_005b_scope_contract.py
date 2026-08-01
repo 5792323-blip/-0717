@@ -92,7 +92,7 @@ def _bar(stock):
     }
 
 
-def _real_buy(executor, stock):
+def _real_buy(executor, stock, *, before_call=None):
     executor.交易记录器.记录本根K线(
         0, "2025-01-02", "09:31", 10.0, 10.0, 50.0, 50.0, 1.0
     )
@@ -101,6 +101,8 @@ def _real_buy(executor, stock):
         "买入信号": [],
         "过滤检查": [],
     }
+    if before_call is not None:
+        before_call(executor)
     return executor._执行买入(
         {}, _bar(stock), 0, 50.0,
         哨兵价=10.0, 信号类型="测试", 信号质量分=0.8,
@@ -108,11 +110,13 @@ def _real_buy(executor, stock):
     )
 
 
-def _real_sell(executor, stock, *, quantity_ratio=1.0):
+def _real_sell(executor, stock, *, quantity_ratio=1.0, before_call=None):
     executor.本根决策 = {"决策记录": {"卖出": {}}}
     bar = _bar(stock)
     bar.update({"不复权_最高": 12.0, "不复权_最低": 9.0})
     position = executor.当前持仓[stock]
+    if before_call is not None:
+        before_call(executor)
     return executor._执行卖出(
         position, {"说明": "测试卖出"}, 0.0, bar,
         股票代码=stock, 卖出比例=quantity_ratio,
@@ -405,16 +409,25 @@ def test_buy_failure_restores_calling_decisions_and_recent_decision(monkeypatch)
     executor._最近成功决策 = deepcopy(recent)
     before = _shared_state_snapshot(account, executor, executor)
     recorder = executor.交易记录器
+    entry = {}
+
+    def set_entry_state(target):
+        target.本根决策 = deepcopy(decision)
+        target._最近成功决策 = deepcopy(recent)
+        entry["本根决策"] = deepcopy(target.本根决策)
+        entry["最近成功决策"] = deepcopy(target._最近成功决策)
 
     def fail_record(*args, **kwargs):
         raise RuntimeError("injected buy decision rollback failure")
 
     monkeypatch.setattr(recorder, "记录买入", fail_record)
     with pytest.raises(RuntimeError, match="injected buy decision rollback failure"):
-        _real_buy(executor, "600001")
+        _real_buy(executor, "600001", before_call=set_entry_state)
 
-    assert executor.本根决策 == decision
-    assert executor._最近成功决策 == recent
+    assert entry["本根决策"] == decision
+    assert entry["最近成功决策"] == recent
+    assert executor.本根决策 == entry["本根决策"]
+    assert executor._最近成功决策 == entry["最近成功决策"]
     assert executor.本根决策 != {}
     assert executor.本根决策 != executor._最近成功决策
     assert _shared_state_snapshot(account, executor, executor) == before
@@ -429,16 +442,25 @@ def test_sell_failure_restores_calling_decisions_and_recent_decision(monkeypatch
     executor._最近成功决策 = deepcopy(recent)
     before = _shared_state_snapshot(account, executor, executor)
     recorder = executor.交易记录器
+    entry = {}
+
+    def set_entry_state(target):
+        target.本根决策 = deepcopy(decision)
+        target._最近成功决策 = deepcopy(recent)
+        entry["本根决策"] = deepcopy(target.本根决策)
+        entry["最近成功决策"] = deepcopy(target._最近成功决策)
 
     def fail_record(*args, **kwargs):
         raise RuntimeError("injected sell decision rollback failure")
 
     monkeypatch.setattr(recorder, "记录卖出", fail_record)
     with pytest.raises(RuntimeError, match="injected sell decision rollback failure"):
-        _real_sell(executor, "600001")
+        _real_sell(executor, "600001", before_call=set_entry_state)
 
-    assert executor.本根决策 == decision
-    assert executor._最近成功决策 == recent
+    assert entry["本根决策"] == decision
+    assert entry["最近成功决策"] == recent
+    assert executor.本根决策 == entry["本根决策"]
+    assert executor._最近成功决策 == entry["最近成功决策"]
     assert executor.本根决策 != executor._最近成功决策
     assert _shared_state_snapshot(account, executor, executor) == before
 
