@@ -548,3 +548,106 @@ def test_legal_buy_and_sell_update_decisions_approval_and_execution_normally(mon
     rows = executor.交易记录器.交易列表
     assert len(rows) == 2
     assert rows[0]["execution_id"] != rows[1]["execution_id"]
+
+
+def _execution_number(value):
+    return int(str(value).lstrip("X"))
+
+
+def _scope_sequence_state(account, first, second):
+    scope = account._execution_scope
+    return {
+        "first_sequence": first.交易记录器.成交序号,
+        "second_sequence": second.交易记录器.成交序号,
+        "execution_ids": set(scope.get("execution_ids", set())),
+        "pending": dict(scope.get("pending_execution_ids", {})),
+        "committed": set(scope.get("committed_execution_ids", set())),
+    }
+
+
+def test_buy_write_failure_restores_all_shared_recorder_sequences(monkeypatch):
+    account, first, second = _shared_executors(monkeypatch)
+    assert _real_buy(first, "600001") is True
+    first_row = first.交易记录器.交易列表[-1]
+    assert first.交易记录器.成交序号 == second.交易记录器.成交序号 == 1
+    assert first_row["execution_id"] in account._execution_scope["committed_execution_ids"]
+    assert not account._execution_scope["pending_execution_ids"]
+
+    recorder = second.交易记录器
+    original_record = recorder.记录买入
+    entry = {}
+
+    def capture_entry(target):
+        entry["snapshot"] = _shared_state_snapshot(account, first, second)
+        entry["sequence"] = _scope_sequence_state(account, first, second)
+
+    def fail_record(*args, **kwargs):
+        raise RuntimeError("injected cross-recorder buy ledger failure")
+
+    monkeypatch.setattr(recorder, "记录买入", fail_record)
+    with pytest.raises(RuntimeError, match="injected cross-recorder buy ledger failure"):
+        _real_buy(second, "600002", before_call=capture_entry)
+    monkeypatch.setattr(recorder, "记录买入", original_record)
+
+    after = _shared_state_snapshot(account, first, second)
+    after_sequence = _scope_sequence_state(account, first, second)
+    assert after_sequence == entry["sequence"], "失败买入泄漏了共享记录器序号"
+    assert after == entry["snapshot"]
+    assert first.交易记录器.成交序号 == second.交易记录器.成交序号
+
+    assert _real_buy(first, "600001") is True
+    next_row = first.交易记录器.交易列表[-1]
+    assert _execution_number(next_row["execution_id"]) == _execution_number(first_row["execution_id"]) + 1
+    assert len({first_row["execution_id"], next_row["execution_id"]}) == 2
+    assert first.交易记录器.成交序号 == second.交易记录器.成交序号 == 2
+
+
+def test_sell_write_failure_restores_all_shared_recorder_sequences(monkeypatch):
+    account, first, second = _shared_executors(monkeypatch)
+    assert _real_buy(first, "600001") is True
+    assert _real_buy(second, "600002") is True
+    assert first.交易记录器.成交序号 == second.交易记录器.成交序号 == 2
+
+    recorder = second.交易记录器
+    original_record = recorder.记录卖出
+    entry = {}
+
+    def capture_entry(target):
+        entry["snapshot"] = _shared_state_snapshot(account, first, second)
+        entry["sequence"] = _scope_sequence_state(account, first, second)
+
+    def fail_record(*args, **kwargs):
+        raise RuntimeError("injected cross-recorder sell ledger failure")
+
+    monkeypatch.setattr(recorder, "记录卖出", fail_record)
+    with pytest.raises(RuntimeError, match="injected cross-recorder sell ledger failure"):
+        _real_sell(second, "600002", before_call=capture_entry)
+    monkeypatch.setattr(recorder, "记录卖出", original_record)
+
+    after = _shared_state_snapshot(account, first, second)
+    after_sequence = _scope_sequence_state(account, first, second)
+    assert after_sequence == entry["sequence"], "失败卖出泄漏了共享记录器序号"
+    assert after == entry["snapshot"]
+    assert first.交易记录器.成交序号 == second.交易记录器.成交序号
+
+    assert _real_buy(first, "600001") is True
+    next_row = first.交易记录器.交易列表[-1]
+    previous_row = first.交易记录器.交易列表[-2]
+    assert _execution_number(next_row["execution_id"]) == _execution_number(previous_row["execution_id"]) + 1
+    assert first.交易记录器.成交序号 == second.交易记录器.成交序号 == 3
+
+
+def test_interleaved_shared_recorders_keep_sequence_and_scope_synchronized(monkeypatch):
+    account, first, second = _shared_executors(monkeypatch)
+    rows = []
+    for executor, stock in ((first, "600001"), (second, "600002"), (first, "600001")):
+        assert _real_buy(executor, stock) is True
+        rows.append(executor.交易记录器.交易列表[-1])
+        assert first.交易记录器.成交序号 == second.交易记录器.成交序号
+        assert not account._execution_scope["pending_execution_ids"]
+        assert len(account._execution_scope["committed_execution_ids"]) == len(rows)
+
+    ids = [row["execution_id"] for row in rows]
+    assert all(isinstance(value, str) and value.strip() for value in ids)
+    assert len(set(ids)) == 3
+    assert [_execution_number(value) for value in ids] == [1, 2, 3]
