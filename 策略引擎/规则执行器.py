@@ -317,7 +317,7 @@ class 规则执行器:
         卖出参数 = self.参数配置.get('卖出参数', {})
         self.RSI价格源 = str(技术参数.get('RSI价格源', 'close'))
         self.信号过期K线数 = int(技术参数.get('信号过期K线数', 72))
-        self.哨兵价本根形成立即买入 = bool(技术参数.get('哨兵价本根形成立即买入', True))
+        self.哨兵价本根形成立即买入 = bool(技术参数.get('哨兵价本根形成立即买入', False))
         if '本根形成立即成交' in self.核心模块:
             self.哨兵价本根形成立即买入 = bool(self.核心模块['本根形成立即成交'].get('启用', False))
         self.哨兵价本根形成立即买入 = self._核心模块启用(
