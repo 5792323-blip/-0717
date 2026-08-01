@@ -11,6 +11,7 @@ import os
 import yaml
 import pandas as pd
 import numpy as np
+from copy import deepcopy
 from uuid import uuid4
 from 策略引擎.反推因子 import 智能反推
 from 模块系统 import 模块开关管理器
@@ -265,11 +266,19 @@ class 规则执行器:
         self.账户视图 = self.账户.股票视图(股票代码)
         requested_run_id = self.运行参数.get("run_id")
         scope = getattr(self.账户, "_execution_scope", None)
-        if scope is None or (requested_run_id and scope["run_id"] != requested_run_id):
+        requested_account_id = self.运行参数.get("account_id")
+        if scope is not None and (
+            (requested_run_id and scope["run_id"] != requested_run_id)
+            or (requested_account_id and scope["account_id"] != requested_account_id)
+        ):
+            raise ValueError("账户 execution scope 的 run_id/account_id 不可覆盖")
+        if scope is None:
             scope = {
                 "run_id": requested_run_id or uuid4().hex,
-                "account_id": self.运行参数.get("account_id") or uuid4().hex,
+                "account_id": requested_account_id or uuid4().hex,
                 "execution_ids": set(),
+                "pending_execution_ids": {},
+                "committed_execution_ids": set(),
                 "recorders": set(),
             }
             self.账户._execution_scope = scope
@@ -1346,15 +1355,83 @@ class 规则执行器:
             self.本根决策["决策记录"]["阶段"] = "次根开盘成交"
         return bool(已买入)
 
-    def _执行买入(self, 规则, K线数据, 当前索引, 当前RSI, 哨兵价=None,
+    def _成交事务快照(self):
+        excluded = {"账户", "账户视图", "交易记录器", "预测器", "因子管理器", "模块开关"}
+        def copy_value(value):
+            try:
+                return deepcopy(value)
+            except (TypeError, AttributeError):
+                return value
+        scope = getattr(self.账户, "_execution_scope", None)
+        return {
+            "executor": {key: copy_value(value) for key, value in self.__dict__.items() if key not in excluded},
+            "account": {
+                "现金": self.账户.现金,
+                "持仓": deepcopy(self.账户.持仓),
+                "审批记录": deepcopy(self.账户.审批记录),
+                "审批统计": deepcopy(self.账户.审批统计),
+                "拒绝序号": self.账户.拒绝序号,
+            },
+            "recorder": {key: copy_value(value) for key, value in self.交易记录器.__dict__.items()
+                          if key != "_execution_scope"},
+            "scope": None if scope is None else {
+                "execution_ids": set(scope["execution_ids"]),
+                "pending_execution_ids": dict(scope.get("pending_execution_ids", {})),
+                "committed_execution_ids": set(scope.get("committed_execution_ids", set())),
+            },
+        }
+
+    def _回滚成交事务(self, snapshot):
+        for key in list(self.__dict__):
+            if key not in {"账户", "账户视图", "交易记录器", "预测器", "因子管理器", "模块开关"}:
+                self.__dict__.pop(key, None)
+        self.__dict__.update(snapshot["executor"])
+        self.账户.现金 = snapshot["account"]["现金"]
+        self.账户.持仓.clear()
+        self.账户.持仓.update(snapshot["account"]["持仓"])
+        self.账户.审批记录[:] = snapshot["account"]["审批记录"]
+        self.账户.审批统计.clear()
+        self.账户.审批统计.update(snapshot["account"]["审批统计"])
+        self.账户.拒绝序号 = snapshot["account"]["拒绝序号"]
+        for key, value in snapshot["recorder"].items():
+            setattr(self.交易记录器, key, value)
+        scope = getattr(self.账户, "_execution_scope", None)
+        if scope is not None and snapshot["scope"] is not None:
+            scope["execution_ids"] = set(snapshot["scope"]["execution_ids"])
+            scope["pending_execution_ids"] = dict(snapshot["scope"]["pending_execution_ids"])
+            scope["committed_execution_ids"] = set(snapshot["scope"]["committed_execution_ids"])
+
+    def _执行买入(self, *args, **kwargs):
+        if not hasattr(self, "账户"):
+            return self._执行买入实现(*args, **kwargs)
+        snapshot = self._成交事务快照()
+        try:
+            result = self._执行买入实现(*args, **kwargs)
+            self._最近成功决策 = deepcopy(self.本根决策)
+            return result
+        except Exception as error:
+            self._回滚成交事务(snapshot)
+            self.本根决策 = {}
+            if "重复 execution_id" in str(error):
+                scope = self.账户._execution_scope
+                self.交易记录器.成交序号 = max(
+                    (recorder.成交序号 for recorder in scope["recorders"]
+                     if recorder is not self.交易记录器),
+                    default=self.交易记录器.成交序号,
+                )
+            raise
+
+    def _执行买入实现(self, 规则, K线数据, 当前索引, 当前RSI, 哨兵价=None,
               信号类型=None, 信号质量分=None, 建议仓位=None, 按开盘成交=False,
               指定股数=None, 指定金额=None, 成交模式="breakout", 最大成交价=None):
         """执行买入"""
         股票代码 = K线数据.get('股票代码', '600519')
-        成交时间 = 规范化成交时间(
-            getattr(K线数据, 'name', None) or K线数据.get('完整时间'),
-            K线数据.get('日期'),
-        )
+        成交时间 = None
+        if hasattr(self.交易记录器, "预留成交ID"):
+            成交时间 = 规范化成交时间(
+                getattr(K线数据, 'name', None) or K线数据.get('完整时间'),
+                K线数据.get('日期'),
+            )
         if (self.运行参数.get("市场评分禁止新开仓", False)
                 and 股票代码 not in self.当前持仓):
             self.本根决策["动作原因"] = "该股票当前不在历史成分股池，禁止新开仓或加仓"
@@ -1703,7 +1780,10 @@ class 规则执行器:
         
         # 记录持仓（支持加仓：同一股票再次买入视为增持，不覆盖原持仓）
         try:
-            execution_id = self.交易记录器.预留成交ID()
+            execution_id = (
+                self.交易记录器.预留成交ID()
+                if hasattr(self.交易记录器, "预留成交ID") else None
+            )
         except ValueError:
             self.本根决策 = {}
             raise
@@ -2592,12 +2672,25 @@ class 规则执行器:
         if len(self.RSI_MA历史) >= 6:
             return self.RSI_MA历史[-1] - self.RSI_MA历史[-6]
         return None
-    def _执行卖出(self, 持仓, 规则, 盈亏比例, K线数据, 触发价=None, 股票代码='600519', 卖出比例=1.0):
+    def _执行卖出(self, *args, **kwargs):
+        if not hasattr(self, "账户"):
+            return self._执行卖出实现(*args, **kwargs)
+        snapshot = self._成交事务快照()
+        try:
+            return self._执行卖出实现(*args, **kwargs)
+        except Exception:
+            self._回滚成交事务(snapshot)
+            self.本根决策 = deepcopy(getattr(self, "_最近成功决策", {}))
+            raise
+
+    def _执行卖出实现(self, 持仓, 规则, 盈亏比例, K线数据, 触发价=None, 股票代码='600519', 卖出比例=1.0):
         """执行卖出（对称于买入：价格跌破触发价-滑点卖出）"""
-        成交时间 = 规范化成交时间(
-            getattr(K线数据, 'name', None) or K线数据.get('完整时间'),
-            K线数据.get('日期'),
-        )
+        成交时间 = None
+        if hasattr(self.交易记录器, "预留成交ID"):
+            成交时间 = 规范化成交时间(
+                getattr(K线数据, 'name', None) or K线数据.get('完整时间'),
+                K线数据.get('日期'),
+            )
         持有K线数 = self.已买入K线数 - 持仓['买入时间']
         
         # 计算卖出执行价（对称于买入的 max(开盘, 哨兵价) + 滑点）
@@ -2647,7 +2740,10 @@ class 规则执行器:
         卖出净金额 = 卖出金额 - 卖出费用
         本次成本 = 持仓.get('总成本', 持仓['成本']) * 卖出股数 / 原股数
         实际盈亏比例 = (卖出净金额 - 本次成本) / max(本次成本, 1)
-        execution_id = self.交易记录器.预留成交ID()
+        execution_id = (
+            self.交易记录器.预留成交ID()
+            if hasattr(self.交易记录器, "预留成交ID") else None
+        )
         
         self.当前现金 += 卖出净金额
         # ★ 修复: 安全删除持仓，防止键值不匹配

@@ -78,13 +78,18 @@ class 交易记录器:
         self.信号K线_最低 = None
 
     def 绑定成交作用域(self, scope):
+        if self._execution_scope is not None and self._execution_scope is not scope:
+            raise ValueError("交易记录器已绑定其他 execution scope")
         self._execution_scope = scope
         scope.setdefault("recorders", set()).add(self)
 
     def 预留成交ID(self):
         """在账户状态变化前预留当前作用域内唯一的成交 ID。"""
         if self._execution_scope is None:
-            self._execution_scope = {"execution_ids": set(), "recorders": {self}}
+            self._execution_scope = {
+                "execution_ids": set(), "pending_execution_ids": {},
+                "committed_execution_ids": set(), "recorders": {self},
+            }
         scope = self._execution_scope
         candidate_number = self.成交序号 + 1
         candidate = f"X{candidate_number:08d}"
@@ -95,11 +100,35 @@ class 交易记录器:
             )
             raise ValueError(f"重复 execution_id: {candidate}")
         scope["execution_ids"].add(candidate)
+        scope.setdefault("pending_execution_ids", {})[candidate] = (self, self.成交序号)
         self.成交序号 = candidate_number
         for recorder in scope["recorders"]:
             if recorder is not self:
                 recorder.成交序号 = max(recorder.成交序号, candidate_number)
         return candidate
+
+    def 使用预留成交ID(self, execution_id):
+        scope = self._execution_scope
+        pending = scope and scope.setdefault("pending_execution_ids", {})
+        if not scope or execution_id not in pending or pending[execution_id][0] is not self:
+            raise ValueError(f"execution_id 未预留或已提交: {execution_id}")
+
+    def 提交成交ID(self, execution_id):
+        scope = self._execution_scope
+        pending = scope and scope.setdefault("pending_execution_ids", {})
+        if not scope or execution_id not in pending or pending[execution_id][0] is not self:
+            raise ValueError(f"execution_id 未预留或已提交: {execution_id}")
+        pending.pop(execution_id)
+        scope.setdefault("committed_execution_ids", set()).add(execution_id)
+
+    def 释放成交ID(self, execution_id):
+        scope = self._execution_scope
+        pending = scope and scope.setdefault("pending_execution_ids", {})
+        if not scope or execution_id not in pending:
+            return
+        recorder, previous_sequence = pending.pop(execution_id)
+        scope["execution_ids"].discard(execution_id)
+        recorder.成交序号 = previous_sequence
     
     def 记录本根K线(self, K线索引, 日期, 时间, 前复权收盘, 不复权收盘, 
                    RSI值, RSI_MA值, ATR值):
@@ -149,6 +178,8 @@ class 交易记录器:
                网格级别=0, 加仓后总持仓=None, execution_id=None):
         """记录一笔买入"""
         成交时间 = 规范化成交时间(时间, 日期)
+        if execution_id is not None:
+            self.使用预留成交ID(execution_id)
         self.买入序号 += 1
         self.意图序号 += 1
         self.订单序号 += 1
@@ -190,6 +221,7 @@ class 交易记录器:
             "信号K线_最低": self.信号K线_最低,
         }
         self.交易列表.append(买入记录)
+        self.提交成交ID(execution_id)
         
         # 记录到持仓记录
         self.持仓记录[-1]["买入序号"] = self.买入序号
@@ -222,6 +254,8 @@ class 交易记录器:
                仓位=None, 成交数量=None, 持仓组ID=None, execution_id=None):
         """记录一笔卖出"""
         成交时间 = 规范化成交时间(时间, 日期)
+        if execution_id is not None:
+            self.使用预留成交ID(execution_id)
         self.意图序号 += 1
         self.订单序号 += 1
         if execution_id is None:
@@ -246,6 +280,7 @@ class 交易记录器:
             "成交数量": 成交数量,
         }
         self.交易列表.append(卖出记录)
+        self.提交成交ID(execution_id)
         
         # 更新对应的买入记录（填入卖出价和盈亏）
         for 记录 in self.交易列表:
