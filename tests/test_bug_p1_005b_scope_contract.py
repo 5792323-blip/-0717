@@ -152,6 +152,7 @@ def _shared_state_snapshot(account, first, second):
         recorder = executor.交易记录器
         recorder_state[name] = {
             "交易列表": deepcopy(recorder.交易列表),
+            "持仓记录": deepcopy(recorder.持仓记录),
             "买入序号": recorder.买入序号,
             "卖出序号": getattr(recorder, "卖出序号", None),
             "意图序号": recorder.意图序号,
@@ -165,6 +166,7 @@ def _shared_state_snapshot(account, first, second):
             for key in (
                 "连续亏损次数", "冷却期剩余K线", "哨兵价已消费价格",
                 "最近成交哨兵价", "哨兵价当前", "本根决策",
+                "_最近成功决策",
                 "_本根已买入股票", "已实现损益", "未实现损益",
                 "累计费用", "买入费用累计", "卖出费用累计",
             )
@@ -175,6 +177,15 @@ def _shared_state_snapshot(account, first, second):
         "审批记录": deepcopy(account.审批记录),
         "审批统计": deepcopy(account.审批统计),
         "拒绝序号": account.拒绝序号,
+        "_last_approval_cash": deepcopy(account._last_approval_cash),
+        "_last_approval_positions": deepcopy(account._last_approval_positions),
+        "scope": {
+            "object_id": id(account._execution_scope),
+            "execution_ids": set(account._execution_scope.get("execution_ids", set())),
+            "pending_execution_ids": dict(account._execution_scope.get("pending_execution_ids", {})),
+            "committed_execution_ids": set(account._execution_scope.get("committed_execution_ids", set())),
+            "recorders": set(account._execution_scope.get("recorders", set())),
+        },
         "记录器": recorder_state,
         "策略": strategy_state,
     }
@@ -222,18 +233,21 @@ def test_forced_duplicate_execution_id_fails_before_second_state_change(monkeypa
     account, first_executor, second_executor = _shared_executors(monkeypatch)
     assert _real_buy(first_executor, "600001") is True
     first = first_executor.交易记录器.交易列表[-1]
-    before = _shared_state_snapshot(account, first_executor, second_executor)
-
     # Force the second real executor's generator back to the first ID.
     second_executor.交易记录器.成交序号 = 0
+    before = {}
+
+    def capture_entry(target):
+        before["snapshot"] = _shared_state_snapshot(account, first_executor, second_executor)
+
     caught = None
     try:
-        _real_buy(second_executor, "600002")
+        _real_buy(second_executor, "600002", before_call=capture_entry)
     except Exception as error:  # capture to assert atomic rejection and state
         caught = error
 
     after = _shared_state_snapshot(account, first_executor, second_executor)
-    assert after == before, "重复成交已在拒绝前改变账户、账本或策略状态"
+    assert after == before["snapshot"], "重复成交已在拒绝前改变账户、账本或策略状态"
     assert caught is not None, "重复 execution_id 必须在账户状态变化前拒绝"
     assert any(token in str(caught).lower() for token in ("execution", "重复", "唯一"))
     assert first["execution_id"]
@@ -293,10 +307,10 @@ def test_same_account_different_run_id_is_rejected_without_scope_replacement(mon
 
 def test_buy_record_failure_rolls_back_reserved_id_and_account(monkeypatch):
     account, executor, _ = _shared_executors(monkeypatch)
-    before = _shared_state_snapshot(account, executor, executor)
     scope = account._execution_scope
     reserved_before = set(scope["execution_ids"])
     recorder = executor.交易记录器
+    before = {}
     original_record = recorder.记录买入
 
     def fail_record(*args, **kwargs):
@@ -304,11 +318,12 @@ def test_buy_record_failure_rolls_back_reserved_id_and_account(monkeypatch):
 
     monkeypatch.setattr(recorder, "记录买入", fail_record)
     with pytest.raises(RuntimeError, match="injected buy ledger failure"):
-        _real_buy(executor, "600001")
+        _real_buy(executor, "600001", before_call=lambda target: before.update(
+            snapshot=_shared_state_snapshot(account, executor, executor)))
     monkeypatch.setattr(recorder, "记录买入", original_record)
 
     after = _shared_state_snapshot(account, executor, executor)
-    assert after == before, "买入账本失败后账户、策略和审批状态必须原子回滚"
+    assert after == before["snapshot"], "买入账本失败后账户、策略和审批状态必须原子回滚"
     assert set(scope["execution_ids"]) == reserved_before
 
     # Reusing the next candidate proves a failed reservation did not leave a ghost ID.
@@ -323,10 +338,10 @@ def test_sell_record_failure_rolls_back_reserved_id_and_account(monkeypatch):
     assert _real_buy(executor, "600001") is True
     assert _real_buy(executor, "600001") is True
     # Two lots ensure a half-size sell leaves a position for the retry.
-    before = _shared_state_snapshot(account, executor, executor)
     scope = account._execution_scope
     reserved_before = set(scope["execution_ids"])
     recorder = executor.交易记录器
+    before = {}
     original_record = recorder.记录卖出
 
     def fail_record(*args, **kwargs):
@@ -334,11 +349,12 @@ def test_sell_record_failure_rolls_back_reserved_id_and_account(monkeypatch):
 
     monkeypatch.setattr(recorder, "记录卖出", fail_record)
     with pytest.raises(RuntimeError, match="injected sell ledger failure"):
-        _real_sell(executor, "600001", quantity_ratio=0.5)
+        _real_sell(executor, "600001", quantity_ratio=0.5, before_call=lambda target: before.update(
+            snapshot=_shared_state_snapshot(account, executor, executor)))
     monkeypatch.setattr(recorder, "记录卖出", original_record)
 
     after = _shared_state_snapshot(account, executor, executor)
-    assert after == before, "卖出账本失败后账户、策略和审批状态必须原子回滚"
+    assert after == before["snapshot"], "卖出账本失败后账户、策略和审批状态必须原子回滚"
     assert set(scope["execution_ids"]) == reserved_before
 
     recorder.成交序号 = 2
@@ -407,7 +423,6 @@ def test_buy_failure_restores_calling_decisions_and_recent_decision(monkeypatch)
     recent = {"marker": "BUY-RECENT", "nested": {"values": [9]}}
     executor.本根决策 = deepcopy(decision)
     executor._最近成功决策 = deepcopy(recent)
-    before = _shared_state_snapshot(account, executor, executor)
     recorder = executor.交易记录器
     entry = {}
 
@@ -416,6 +431,7 @@ def test_buy_failure_restores_calling_decisions_and_recent_decision(monkeypatch)
         target._最近成功决策 = deepcopy(recent)
         entry["本根决策"] = deepcopy(target.本根决策)
         entry["最近成功决策"] = deepcopy(target._最近成功决策)
+        entry["snapshot"] = _shared_state_snapshot(account, target, target)
 
     def fail_record(*args, **kwargs):
         raise RuntimeError("injected buy decision rollback failure")
@@ -430,7 +446,7 @@ def test_buy_failure_restores_calling_decisions_and_recent_decision(monkeypatch)
     assert executor._最近成功决策 == entry["最近成功决策"]
     assert executor.本根决策 != {}
     assert executor.本根决策 != executor._最近成功决策
-    assert _shared_state_snapshot(account, executor, executor) == before
+    assert _shared_state_snapshot(account, executor, executor) == entry["snapshot"]
 
 
 def test_sell_failure_restores_calling_decisions_and_recent_decision(monkeypatch):
@@ -440,7 +456,6 @@ def test_sell_failure_restores_calling_decisions_and_recent_decision(monkeypatch
     recent = {"marker": "SELL-RECENT", "nested": {"values": [8, 9]}}
     executor.本根决策 = deepcopy(decision)
     executor._最近成功决策 = deepcopy(recent)
-    before = _shared_state_snapshot(account, executor, executor)
     recorder = executor.交易记录器
     entry = {}
 
@@ -449,6 +464,7 @@ def test_sell_failure_restores_calling_decisions_and_recent_decision(monkeypatch
         target._最近成功决策 = deepcopy(recent)
         entry["本根决策"] = deepcopy(target.本根决策)
         entry["最近成功决策"] = deepcopy(target._最近成功决策)
+        entry["snapshot"] = _shared_state_snapshot(account, target, target)
 
     def fail_record(*args, **kwargs):
         raise RuntimeError("injected sell decision rollback failure")
@@ -462,7 +478,7 @@ def test_sell_failure_restores_calling_decisions_and_recent_decision(monkeypatch
     assert executor.本根决策 == entry["本根决策"]
     assert executor._最近成功决策 == entry["最近成功决策"]
     assert executor.本根决策 != executor._最近成功决策
-    assert _shared_state_snapshot(account, executor, executor) == before
+    assert _shared_state_snapshot(account, executor, executor) == entry["snapshot"]
 
 
 def test_buy_approval_internal_snapshot_rolls_back_after_late_failure(monkeypatch):
@@ -470,7 +486,7 @@ def test_buy_approval_internal_snapshot_rolls_back_after_late_failure(monkeypatc
     account._last_approval_cash = 12345.67
     account._last_approval_positions = {"sentinel": 7}
     before_account = _approval_state(account)
-    before = _shared_state_snapshot(account, executor, executor)
+    before = {}
     original_approval = executor._记录账户审批
     observed = {}
 
@@ -481,11 +497,12 @@ def test_buy_approval_internal_snapshot_rolls_back_after_late_failure(monkeypatc
 
     monkeypatch.setattr(executor, "_记录账户审批", fail_after_approval)
     with pytest.raises(RuntimeError, match="injected buy post-approval failure"):
-        _real_buy(executor, "600001")
+        _real_buy(executor, "600001", before_call=lambda target: before.update(
+            snapshot=_shared_state_snapshot(account, executor, executor)))
 
     assert observed["state"] != before_account
     assert observed["state"]["持仓"] != before_account["持仓"]
-    assert _shared_state_snapshot(account, executor, executor) == before
+    assert _shared_state_snapshot(account, executor, executor) == before["snapshot"]
     assert _approval_state(account) == before_account
 
 
@@ -495,7 +512,7 @@ def test_sell_approval_internal_snapshot_rolls_back_after_late_failure(monkeypat
     account._last_approval_cash = 23456.78
     account._last_approval_positions = {"sentinel": 8}
     before_account = _approval_state(account)
-    before = _shared_state_snapshot(account, executor, executor)
+    before = {}
     original_approval = executor._记录账户审批
     observed = {}
 
@@ -506,11 +523,12 @@ def test_sell_approval_internal_snapshot_rolls_back_after_late_failure(monkeypat
 
     monkeypatch.setattr(executor, "_记录账户审批", fail_after_approval)
     with pytest.raises(RuntimeError, match="injected sell post-approval failure"):
-        _real_sell(executor, "600001")
+        _real_sell(executor, "600001", before_call=lambda target: before.update(
+            snapshot=_shared_state_snapshot(account, executor, executor)))
 
     assert observed["state"] != before_account
     assert observed["state"]["持仓"] != before_account["持仓"]
-    assert _shared_state_snapshot(account, executor, executor) == before
+    assert _shared_state_snapshot(account, executor, executor) == before["snapshot"]
     assert _approval_state(account) == before_account
 
 
