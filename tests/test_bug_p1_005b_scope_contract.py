@@ -611,12 +611,14 @@ def test_sell_write_failure_restores_all_shared_recorder_sequences(monkeypatch):
     recorder = second.交易记录器
     original_record = recorder.记录卖出
     entry = {}
+    failed_candidate = {}
 
     def capture_entry(target):
         entry["snapshot"] = _shared_state_snapshot(account, first, second)
         entry["sequence"] = _scope_sequence_state(account, first, second)
 
     def fail_record(*args, **kwargs):
+        failed_candidate["execution_id"] = kwargs["execution_id"]
         raise RuntimeError("injected cross-recorder sell ledger failure")
 
     monkeypatch.setattr(recorder, "记录卖出", fail_record)
@@ -628,12 +630,16 @@ def test_sell_write_failure_restores_all_shared_recorder_sequences(monkeypatch):
     after_sequence = _scope_sequence_state(account, first, second)
     assert after_sequence == entry["sequence"], "失败卖出泄漏了共享记录器序号"
     assert after == entry["snapshot"]
+    assert failed_candidate["execution_id"] not in after_sequence["committed"]
+    assert failed_candidate["execution_id"] not in after_sequence["execution_ids"]
+    assert not after_sequence["pending"]
     assert first.交易记录器.成交序号 == second.交易记录器.成交序号
 
     assert _real_buy(first, "600001") is True
     next_row = first.交易记录器.交易列表[-1]
-    previous_row = first.交易记录器.交易列表[-2]
-    assert _execution_number(next_row["execution_id"]) == _execution_number(previous_row["execution_id"]) + 1
+    assert next_row["execution_id"] == failed_candidate["execution_id"]
+    assert next_row["execution_id"] in account._execution_scope["committed_execution_ids"]
+    assert next_row["execution_id"] not in account._execution_scope["pending_execution_ids"]
     assert first.交易记录器.成交序号 == second.交易记录器.成交序号 == 3
 
 
