@@ -76,7 +76,14 @@ def _股票归因(trades, ending_value):
     比例结转，本函数必须使用同一口径，不能改用 FIFO。
     """
     for _, trade in trades.iterrows():
-        规范化成交时间(trade.get("时间"))
+        时间 = trade.get("时间")
+        日期 = trade.get("日期")
+        if "时间" not in trade or 时间 is None or pd.isna(时间) or str(时间).strip() == "":
+            日期 = None
+        规范化成交时间(
+            时间,
+            None if pd.isna(日期) else 日期,
+        )
     # An attribution ledger must contain each actual execution exactly once.
     if "execution_id" in trades.columns:
         execution_ids = trades["execution_id"].astype(str).str.strip()
@@ -120,7 +127,14 @@ def _股票归因(trades, ending_value):
 def _写入股票归因过程(process, trades):
     """用股票自身成交和市值补全过程归因，禁止写入组合现金或组合权益。"""
     for _, trade in trades.iterrows():
-        规范化成交时间(trade.get("时间"))
+        时间 = trade.get("时间")
+        日期 = trade.get("日期")
+        if "时间" not in trade or 时间 is None or pd.isna(时间) or str(时间).strip() == "":
+            日期 = None
+        规范化成交时间(
+            时间,
+            None if pd.isna(日期) else 日期,
+        )
     if process.empty:
         return process
     process = process.copy()
