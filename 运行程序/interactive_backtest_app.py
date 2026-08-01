@@ -7,6 +7,7 @@ import copy
 import csv
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -126,6 +127,56 @@ from 数据模块.数据质量审计 import 生成数据版本
 def 读取回测进度():
     with 回测进度锁:
         return copy.deepcopy(回测进度)
+
+
+def 读取市场流动性观察(lookback=180):
+    """Read-only market liquidity view; T-day data is never used by the strategy."""
+    path = 指数基准配置["hs300"]["benchmark_path"]
+    try:
+        frame = pd.read_pickle(path).copy()
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+        frame["amount"] = pd.to_numeric(frame["amount"], errors="coerce")
+        frame = frame.dropna(subset=["date", "amount"])
+        frame = frame[frame["amount"] > 0].sort_values("date")
+        if frame.empty:
+            return {"可用": False, "原因": "无有效成交额数据"}
+        frame["流动资金"] = frame["amount"].div(1e8).ewm(alpha=0.1, adjust=False).mean()
+        frame["变化率"] = frame["流动资金"].pct_change().mul(100)
+        direction = frame["变化率"].fillna(0).ge(0)
+        streak = []
+        count = 0
+        previous = None
+        for value in direction:
+            current = bool(value)
+            count = count + 1 if previous is None or current == previous else 1
+            streak.append(count)
+            previous = current
+        frame["连续天数"] = streak
+        view = frame.tail(lookback)
+        latest = frame.iloc[-1]
+        def 有限变化率(value):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return 0.0
+            return value if math.isfinite(value) else 0.0
+
+        latest_change = 有限变化率(latest["变化率"])
+        return {
+            "可用": True,
+            "最新日期": latest["date"].strftime("%Y-%m-%d"),
+            "最新值": round(float(latest["流动资金"]), 2),
+            "变化率": round(latest_change, 3),
+            "方向": "上升" if latest_change > 0 else "下降" if latest_change < 0 else "持平",
+            "连续天数": int(latest["连续天数"]),
+            "数据": [
+                {"日期": row["date"].strftime("%Y-%m-%d"), "值": round(float(row["流动资金"]), 2),
+                 "方向": "上升" if 有限变化率(row["变化率"]) > 0 else "下降"}
+                for _, row in view.iterrows()
+            ],
+        }
+    except (OSError, ValueError, KeyError, TypeError):
+        return {"可用": False, "原因": "沪深300成交额数据不可读取"}
 
 
 def _回测进度回调(task_id, **changes):
@@ -867,6 +918,15 @@ def 启动后台回测(form, mode):
     .diagnostic-item strong { display: block; margin-top: 4px; font-size: 18px; }
     .diagnostic-table { margin-top: 12px; }
     .diagnostic-warnings { margin-top: 12px; color: var(--danger); font-size: 12px; line-height: 1.7; }
+    .liquidity-card { margin-top: 12px; }
+    .liquidity-meta { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--muted); }
+    .liquidity-meta b { color: var(--ink); font-size: 20px; }
+    .liquidity-up { color: #dc2626; }
+    .liquidity-down { color: #16a34a; }
+    .liquidity-bars { display: flex; align-items: flex-end; gap: 2px; height: 130px; margin-top: 12px; padding: 8px 4px 0; border-bottom: 1px solid var(--line); overflow: hidden; }
+    .liquidity-bar { display: block; flex: 1 1 0; min-width: 2px; max-width: 8px; border-radius: 1px 1px 0 0; opacity: .9; }
+    .liquidity-bar.up { background: #ef233c; }
+    .liquidity-bar.down { background: #16a34a; }
     @media (max-width: 900px) { .diagnostic-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     .section-title {
       font-size: 14px;
@@ -1522,6 +1582,20 @@ def 启动后台回测(form, mode):
           <span id="lifecycleStatus" class="progress-detail"></span>
         </div>
         <div id="progressError" class="progress-error" hidden></div>
+      </div>
+
+      <div class="panel result-card liquidity-card">
+        <div class="section-title"><span>市场流动性观察（沪深300成交额代理）</span><span class="progress-detail">仅观察，不参与交易决策</span></div>
+        {% if market_liquidity and market_liquidity.get('可用') %}
+        <div class="liquidity-meta"><b>{{ market_liquidity.get('最新值') }} 亿元</b><span class="{{ 'liquidity-up' if market_liquidity.get('方向') == '上升' else 'liquidity-down' }}">{{ market_liquidity.get('方向') }} {{ '%+.3f'|format(market_liquidity.get('变化率', 0)) }}% · 连续{{ market_liquidity.get('连续天数') }}日</span><span>截至 {{ market_liquidity.get('最新日期') }}</span></div>
+        <div id="liquidityBars" class="liquidity-bars" aria-label="流动资金连续方向柱图"></div>
+        <script>
+          (() => { const rows = {{ market_liquidity.get('数据', [])|tojson }}; const host = document.getElementById('liquidityBars');
+            if (!host || !rows.length) return; const max = Math.max(...rows.map(x => x.值), 1); const min = Math.min(...rows.map(x => x.值), 0); const span = Math.max(max - min, 1);
+            host.innerHTML = rows.map(x => `<span title="${x.日期} ${x.值}亿元" class="liquidity-bar ${x.方向 === '上升' ? 'up' : 'down'}" style="height:${Math.max(4, ((x.值-min)/span)*100)}%"></span>`).join('');
+          })();
+        </script>
+        {% else %}<div class="result-note">市场流动性数据暂不可用。</div>{% endif %}
       </div>
 
       <div class="panel toolbar">
@@ -4675,6 +4749,7 @@ def 首页():
         last_run_saved_at=last_run_saved_at,
         last_run_mode="单股" if last_run_mode == "single" else "多股" if last_run_mode == "multi" else "",
         progress=页面进度,
+        market_liquidity=读取市场流动性观察(),
     )
 
 
