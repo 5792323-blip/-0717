@@ -15,13 +15,25 @@ adaptive-phase1-infrastructure
 
 ## 当前进行中
 
-### CONFIG-P2-BOOL-NORMALIZATION
+### BUG-P1-PERSISTENCE-ATOMICITY
 
-状态：BLOCKED-PERSISTENCE-ATOMICITY
+状态：待 Gate 2 定义审计。
 
-布尔归一化修复 `af7d214` 的专项行为通过，但 Gate 6 C 发现同一保存链的多文件 YAML/工作台写入缺少原子提交与失败回滚。修复需要扩大到持久化事务契约，当前未批准该范围；`af7d214` 尚未合并到稳定分支。
+严重级别：P1；当前稳定 HEAD：`e96ba2bacef8cf560d57a76a976dbfb3292ff35a`。
 
-阻塞日期：2026-08-02。
+直接证据：正式配置 YAML、工作台 JSON、快照路径存在顺序写入；失败注入可能在部分文件替换后留下半完成状态。涉及 `运行程序/interactive_backtest_app.py` 的正式配置写入、工作台配置保存和快照写入调用链。
+
+Expected：一次逻辑保存全部成功或保持保存前状态；失败后逐字节回滚、清理临时文件并明确返回错误。
+
+Actual：多文件写入缺少统一原子提交/跨文件回滚证据；需 B/C 先确认入口事务边界。
+
+失败注入点：任一 YAML/JSON 临时文件替换或写入失败。
+
+允许测试范围：仅新增该问题编号的保存失败注入测试；不得修改 CONFIG-P2 测试。
+
+初步生产范围：保存调用链涉及的最小持久化模块，待 Gate 2 冻结。
+
+验收条件：parent 稳定复现；candidate 全部文件逐字节恢复、错误明确、无临时残留，candidate-only failure 为 0。
 
 ### BUG-P1-011
 
@@ -53,3 +65,4 @@ adaptive-phase1-infrastructure
 - 测试和生产修改不得混合。
 - candidate-only failure 必须为零。
 - 只有 A 可以关闭问题。
+- D/E 不得在稳定主 worktree 写入；启动前报告目标分支/worktree；完成后 A 检查主工作区；遗留未跟踪文件先无损恢复到命名分支再处置；可隔离遗留不得永久阻塞后续事项。
