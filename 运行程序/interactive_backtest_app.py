@@ -2528,7 +2528,7 @@ def 参数显示值(value):
 
 def 解析参数值(raw_value, default):
     if isinstance(default, bool):
-        return raw_value == "on"
+        return 规范化布尔值(raw_value)
     if isinstance(default, int) and not isinstance(default, bool):
         try:
             return int(float(raw_value))
@@ -2803,6 +2803,15 @@ def 安全读取表单值(form_data, key, caster, default):
         return default
 
 
+def 规范化布尔值(value):
+    """将表单/API 常见布尔表示归一化；缺失复选框值保持为 False。"""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"true", "1", "on"}
+
+
 def 买入时机名称(value):
     return {
         "precomputed_stop_entry": "严格预挂单（无前视）",
@@ -2871,16 +2880,19 @@ def 规范化表单(form_data):
         elif normalized[f"{prefix}_entry_timing"] == "same_bar_entry":
             normalized[f"{prefix}_switch_核心模块_same_bar_entry"] = True
             normalized[f"{prefix}_switch_核心模块_next_bar_entry"] = False
-    normalized["single_full_position_mode"] = form_data.get("single_full_position_mode") == "on"
-    normalized["multi_allow_partial_fill"] = form_data.get("multi_allow_partial_fill") == "on"
+    normalized["single_full_position_mode"] = 规范化布尔值(
+        form_data.get("single_full_position_mode")
+    )
+    normalized["multi_allow_partial_fill"] = 规范化布尔值(
+        form_data.get("multi_allow_partial_fill")
+    )
     for prefix in ("single", "multi"):
         for suffix in ("single_limit", "total_limit", "cash_floor"):
-            normalized[f"{prefix}_enable_{suffix}"] = (
-                form_data.get(f"{prefix}_enable_{suffix}") == "on"
+            normalized[f"{prefix}_enable_{suffix}"] = 规范化布尔值(
+                form_data.get(f"{prefix}_enable_{suffix}")
             )
-    normalized["multi_historical_constituents"] = (
-        str(form_data.get("multi_historical_constituents", "")).strip().lower()
-        in ("true", "on", "1")
+    normalized["multi_historical_constituents"] = 规范化布尔值(
+        form_data.get("multi_historical_constituents")
     )
     numeric_fields = {
         "single_capital": float, "single_base_position": float, "single_max_positions": int,
@@ -2920,7 +2932,7 @@ def 规范化表单(form_data):
     for key in defaults:
         if "_switch_" in key:
             value = form_data.get(key)
-            normalized[key] = value is True or str(value).strip().lower() in {"on", "true", "1"}
+            normalized[key] = 规范化布尔值(value)
         if "_param_" in key:
             normalized[key] = 解析参数值(form_data.get(key), defaults[key])
     # Apply timing invariants after reading checkbox fields; otherwise a stale
