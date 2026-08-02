@@ -185,7 +185,8 @@ class 规则执行器:
             self.账户视图.记录审批(**row)
 
     def _新审批ID(self):
-        return self.账户.生成审批ID() if hasattr(self.账户, "生成审批ID") else None
+        account = getattr(self, "账户", None)
+        return account.生成审批ID() if account is not None and hasattr(account, "生成审批ID") else None
 
     @staticmethod
     def _拒绝分类(row):
@@ -1393,6 +1394,102 @@ class 规则执行器:
             },
         }
 
+    @staticmethod
+    def _事务值不同(left, right):
+        try:
+            return left != right
+        except (TypeError, ValueError):
+            return True
+
+    def _合并嵌套事务变更(self, target, before, after):
+        """Restore the outer savepoint while retaining committed nested work."""
+        before_executor = before["executor"]
+        after_executor = after["executor"]
+        target_executor = target["executor"]
+        for key, value in after_executor.items():
+            if key not in before_executor or self._事务值不同(value, before_executor[key]):
+                target_executor[key] = deepcopy(value)
+        for key in set(before_executor) - set(after_executor):
+            if key in target_executor:
+                target_executor.pop(key, None)
+
+        before_account = before["account"]
+        after_account = after["account"]
+        target_account = target["account"]
+        if after_account["现金"] != before_account["现金"]:
+            target_account["现金"] += after_account["现金"] - before_account["现金"]
+        for key, value in after_account.items():
+            if key in {"现金", "持仓", "审批记录", "审批统计"}:
+                continue
+            if self._事务值不同(value, before_account.get(key)):
+                target_account[key] = deepcopy(value)
+        if self._事务值不同(after_account["持仓"], before_account["持仓"]):
+            holdings = target_account["持仓"]
+            for key in set(before_account["持仓"]) | set(after_account["持仓"]):
+                before_position = before_account["持仓"].get(key, {})
+                after_position = after_account["持仓"].get(key, {})
+                if "股数" in before_position or "股数" in after_position:
+                    quantity_delta = int(after_position.get("股数", 0) or 0) - int(before_position.get("股数", 0) or 0)
+                    if quantity_delta:
+                        position = holdings.get(key)
+                        if position is None:
+                            position = deepcopy(after_position)
+                            position["股数"] = 0
+                            holdings[key] = position
+                        position["股数"] = int(position.get("股数", 0) or 0) + quantity_delta
+                elif key not in before_account["持仓"]:
+                    holdings[key] = deepcopy(after_position)
+        if len(after_account["审批记录"]) >= len(before_account["审批记录"]):
+            target_account["审批记录"].extend(
+                deepcopy(after_account["审批记录"][len(before_account["审批记录"]):])
+            )
+        else:
+            target_account["审批记录"] = deepcopy(after_account["审批记录"])
+        for key, value in after_account["审批统计"].items():
+            previous = before_account["审批统计"].get(key, 0)
+            delta = value - previous
+            if delta:
+                target_account["审批统计"][key] = target_account["审批统计"].get(key, 0) + delta
+
+        before_recorder = before["recorder"]
+        after_recorder = after["recorder"]
+        target_recorder = target["recorder"]
+        for key, value in after_recorder.items():
+            if key in {"交易列表", "持仓记录"}:
+                continue
+            if self._事务值不同(value, before_recorder.get(key)):
+                target_recorder[key] = deepcopy(value)
+        for key in ("交易列表", "持仓记录"):
+            before_items = before_recorder[key]
+            after_items = after_recorder[key]
+            if len(after_items) >= len(before_items):
+                target_recorder[key].extend(deepcopy(after_items[len(before_items):]))
+            else:
+                target_recorder[key] = deepcopy(after_items)
+
+        before_scope = before.get("scope")
+        after_scope = after.get("scope")
+        target_scope = target.get("scope")
+        if before_scope is not None and after_scope is not None and target_scope is not None:
+            target_scope["execution_ids"].update(
+                after_scope["execution_ids"] - before_scope["execution_ids"]
+            )
+            target_scope["execution_ids"].difference_update(
+                before_scope["execution_ids"] - after_scope["execution_ids"]
+            )
+            target_scope["pending_execution_ids"].update(
+                after_scope["pending_execution_ids"]
+            )
+            for execution_id in set(before_scope["pending_execution_ids"]) - set(after_scope["pending_execution_ids"]):
+                target_scope["pending_execution_ids"].pop(execution_id, None)
+            target_scope["committed_execution_ids"].update(
+                after_scope["committed_execution_ids"] - before_scope["committed_execution_ids"]
+            )
+            for recorder, sequence in after_scope["recorder_sequences"].items():
+                previous = before_scope["recorder_sequences"].get(recorder, sequence)
+                if sequence != previous:
+                    target_scope["recorder_sequences"][recorder] = sequence
+
     def _回滚成交事务(self, snapshot):
         for key in list(self.__dict__):
             if key not in {"账户", "账户视图", "交易记录器", "预测器", "因子管理器", "模块开关"}:
@@ -1428,13 +1525,29 @@ class 规则执行器:
         if not hasattr(self, "账户"):
             return self._执行买入实现(*args, **kwargs)
         snapshot = self._成交事务快照()
+        stack = getattr(self.账户, "_execution_transaction_stack", None)
+        if stack is None:
+            stack = []
+            self.账户._execution_transaction_stack = stack
+        frame = {"snapshot": snapshot, "nested_commits": []}
+        stack.append(frame)
         try:
             result = self._执行买入实现(*args, **kwargs)
             self._最近成功决策 = deepcopy(self.本根决策)
+            if len(stack) > 1:
+                parent = stack[-2]
+                parent["nested_commits"].append((snapshot, self._成交事务快照()))
             return result
         except Exception as error:
-            self._回滚成交事务(snapshot)
+            restored = snapshot
+            for nested_before, nested_after in frame["nested_commits"]:
+                self._合并嵌套事务变更(restored, nested_before, nested_after)
+            self._回滚成交事务(restored)
             raise
+        finally:
+            stack.pop()
+            if not stack:
+                delattr(self.账户, "_execution_transaction_stack")
 
     def _执行买入实现(self, 规则, K线数据, 当前索引, 当前RSI, 哨兵价=None,
               信号类型=None, 信号质量分=None, 建议仓位=None, 按开盘成交=False,
@@ -2694,11 +2807,27 @@ class 规则执行器:
         if not hasattr(self, "账户"):
             return self._执行卖出实现(*args, **kwargs)
         snapshot = self._成交事务快照()
+        stack = getattr(self.账户, "_execution_transaction_stack", None)
+        if stack is None:
+            stack = []
+            self.账户._execution_transaction_stack = stack
+        frame = {"snapshot": snapshot, "nested_commits": []}
+        stack.append(frame)
         try:
-            return self._执行卖出实现(*args, **kwargs)
+            result = self._执行卖出实现(*args, **kwargs)
+            if len(stack) > 1:
+                stack[-2]["nested_commits"].append((snapshot, self._成交事务快照()))
+            return result
         except Exception:
-            self._回滚成交事务(snapshot)
+            restored = snapshot
+            for nested_before, nested_after in frame["nested_commits"]:
+                self._合并嵌套事务变更(restored, nested_before, nested_after)
+            self._回滚成交事务(restored)
             raise
+        finally:
+            stack.pop()
+            if not stack:
+                delattr(self.账户, "_execution_transaction_stack")
 
     def _执行卖出实现(self, 持仓, 规则, 盈亏比例, K线数据, 触发价=None, 股票代码='600519', 卖出比例=1.0):
         """执行卖出（对称于买入：价格跌破触发价-滑点卖出）"""
