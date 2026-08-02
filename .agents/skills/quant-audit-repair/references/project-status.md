@@ -10,11 +10,18 @@ adaptive-phase1-infrastructure
 - BUG-P1-005A
 - BUG-P1-005B
 - BUG-P1-005C
-- CONFIG-P2-BOOL-NORMALIZATION
 - 市场流动性观察 UI
 - 默认严格预挂单配置契约
 
 ## 当前进行中
+
+### CONFIG-P2-BOOL-NORMALIZATION
+
+状态：BLOCKED-PERSISTENCE-ATOMICITY
+
+布尔归一化修复 `af7d214` 的专项行为通过，但 Gate 6 C 发现同一保存链的多文件 YAML/工作台写入缺少原子提交与失败回滚。修复需要扩大到持久化事务契约，当前未批准该范围；`af7d214` 尚未合并到稳定分支。
+
+阻塞日期：2026-08-02。
 
 ### BUG-P1-011
 
