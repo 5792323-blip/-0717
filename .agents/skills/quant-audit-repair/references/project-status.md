@@ -10,6 +10,7 @@ adaptive-phase1-infrastructure
 - BUG-P1-005A
 - BUG-P1-005B
 - BUG-P1-005C
+- CONFIG-P2-BOOL-NORMALIZATION
 - 市场流动性观察 UI
 - 默认严格预挂单配置契约
 
@@ -32,7 +33,6 @@ adaptive-phase1-infrastructure
 ## 其他未关闭事项
 
 - BUG-P1-011
-- CONFIG-P2-BOOL-NORMALIZATION
 - TEST-INFRA-P1-014
 - TEST-P2-017
 - DESIGN-P2-018
