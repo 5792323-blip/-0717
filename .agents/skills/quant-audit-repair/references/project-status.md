@@ -11,27 +11,11 @@ adaptive-phase1-infrastructure
 - BUG-P1-005B
 - BUG-P1-005C
 - CONFIG-P2-BOOL-NORMALIZATION
-- CONFIG-P2-BOOL-NORMALIZATION
 - 市场流动性观察 UI
 - 默认严格预挂单配置契约
+- BUG-P1-PERSISTENCE-ATOMICITY
 
 ## 当前进行中
-
-### BUG-P1-PERSISTENCE-ATOMICITY
-
-状态：已关闭。正式三 YAML 保存已具备临时 staging、备份替换、失败回滚和残留清理；Gate 6 通过并已合并。
-
-Expected：一次逻辑保存全部成功或保持保存前状态；失败后逐字节回滚、清理临时文件并明确返回错误。
-
-Actual：多文件写入缺少统一原子提交/跨文件回滚证据；需 B/C 先确认入口事务边界。
-
-失败注入点：任一 YAML/JSON 临时文件替换或写入失败。
-
-允许测试范围：仅新增该问题编号的保存失败注入测试；不得修改 CONFIG-P2 测试。
-
-初步生产范围：保存调用链涉及的最小持久化模块，待 Gate 2 冻结。
-
-验收条件：parent 稳定复现；candidate 全部文件逐字节恢复、错误明确、无临时残留，candidate-only failure 为 0。
 
 ### BUG-P1-011
 
