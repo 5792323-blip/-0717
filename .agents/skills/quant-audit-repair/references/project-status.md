@@ -11,7 +11,6 @@ adaptive-phase1-infrastructure
 - BUG-P1-005B
 - BUG-P1-005C
 - CONFIG-P2-BOOL-NORMALIZATION
-- BUG-P1-PERSISTENCE-ATOMICITY
 - CONFIG-P2-BOOL-NORMALIZATION
 - 市场流动性观察 UI
 - 默认严格预挂单配置契约
@@ -21,10 +20,6 @@ adaptive-phase1-infrastructure
 ### BUG-P1-PERSISTENCE-ATOMICITY
 
 状态：已关闭。正式三 YAML 保存已具备临时 staging、备份替换、失败回滚和残留清理；Gate 6 通过并已合并。
-
-严重级别：P1；当前稳定 HEAD：`e96ba2bacef8cf560d57a76a976dbfb3292ff35a`。
-
-直接证据：正式配置 YAML、工作台 JSON、快照路径存在顺序写入；失败注入可能在部分文件替换后留下半完成状态。涉及 `运行程序/interactive_backtest_app.py` 的正式配置写入、工作台配置保存和快照写入调用链。
 
 Expected：一次逻辑保存全部成功或保持保存前状态；失败后逐字节回滚、清理临时文件并明确返回错误。
 
