@@ -2448,7 +2448,7 @@ def 构建工作台表单():
     saved = 读取最近工作台配置()
     for key, value in saved.items():
         if key in defaults:
-            defaults[key] = value
+            defaults[key] = 规范化布尔值(value) if isinstance(defaults[key], bool) else value
     if saved.get("strategy_schema_version") == 2:
         source_prefix = "single"
     else:
@@ -3142,7 +3142,7 @@ def 应用表单到配置(config_dir, form):
     # 基础单只金额代表网格预算；网格启用时，首笔普通买入请求统一
     # 按首笔比例折算。这个规则不再只在单股满仓模式下生效。
     有效首笔金额 = float(form["base_position"])
-    if (form.get("switch_扩展因子_grid_addon")
+    if (规范化布尔值(form.get("switch_扩展因子_grid_addon"))
             and form.get("grid_initial_ratio") is not None):
         有效首笔金额 *= float(form["grid_initial_ratio"])
     positions["基准仓位"]["基础单只金额"] = 有效首笔金额
@@ -3202,7 +3202,9 @@ def 应用表单到配置(config_dir, form):
     for item in buy_signals.get("买入信号列表", []):
         item.update(module_params.get("买入规则", {}).get(item.get("英文标识"), {}))
         module_id = item.get("英文标识")
-        item["启用"] = bool(form.get(f"switch_买入规则_{module_id}", item.get("启用", False)))
+        item["启用"] = 规范化布尔值(
+            form.get(f"switch_买入规则_{module_id}", item.get("启用", False))
+        )
 
     for item in exits["卖出条件列表"]:
         item.update(module_params.get("卖出规则", {}).get(item.get("英文标识"), {}))
@@ -3247,7 +3249,7 @@ def 应用表单到配置(config_dir, form):
     for category, items in 模块显示顺序.items():
         for module_id, _label in items:
             form_key = f"switch_{category}_{module_id}"
-            enabled = bool(form[form_key])
+            enabled = 规范化布尔值(form[form_key])
             if category == "核心模块" and module_id == "next_bar_entry":
                 core["核心模块"]["下一根执行"]["启用"] = enabled
                 continue
@@ -3336,7 +3338,7 @@ def 提取模式配置(form, prefix):
         "benchmark": form.get(f"{prefix}_benchmark", "hs300"),
         "start": form[f"{prefix}_start"],
         "end": form[f"{prefix}_end"],
-        "full_position_mode": form.get(f"{prefix}_full_position_mode", False),
+        "full_position_mode": 规范化布尔值(form.get(f"{prefix}_full_position_mode", False)),
         "portfolio_mode": form.get(f"{prefix}_portfolio_mode", "independent"),
         "workers": form.get(f"{prefix}_workers", 1),
         "capital": form[f"{prefix}_capital"],
@@ -3345,9 +3347,9 @@ def 提取模式配置(form, prefix):
         "max_single_ratio": form[f"{prefix}_max_single_ratio"],
         "max_total_ratio": form[f"{prefix}_max_total_ratio"],
         "cash_floor": form[f"{prefix}_cash_floor"],
-        "enable_single_limit": form.get(f"{prefix}_enable_single_limit", True),
-        "enable_total_limit": form.get(f"{prefix}_enable_total_limit", True),
-        "enable_cash_floor": form.get(f"{prefix}_enable_cash_floor", True),
+        "enable_single_limit": 规范化布尔值(form.get(f"{prefix}_enable_single_limit", True)),
+        "enable_total_limit": 规范化布尔值(form.get(f"{prefix}_enable_total_limit", True)),
+        "enable_cash_floor": 规范化布尔值(form.get(f"{prefix}_enable_cash_floor", True)),
         "liquidity_limit": form[f"{prefix}_liquidity_limit"],
         "rsi_period": form[f"{strategy_prefix}_rsi_period"],
         "rsi_price_source": form[f"{strategy_prefix}_rsi_price_source"],
@@ -3378,20 +3380,25 @@ def 提取模式配置(form, prefix):
         "grid_max_add_count": int(form.get(
             f"{strategy_prefix}_param_扩展因子_grid_addon_最大加仓次数", 5
         ) or 5),
-        "allow_partial_fill": bool(form.get(f"{prefix}_allow_partial_fill", True)),
-        "historical_constituents": bool(form.get(f"{prefix}_historical_constituents", False)),
+        "allow_partial_fill": 规范化布尔值(form.get(f"{prefix}_allow_partial_fill", True)),
+        "historical_constituents": 规范化布尔值(form.get(f"{prefix}_historical_constituents", False)),
     }
     for category, items in 模块显示顺序.items():
         for module_id, _label in items:
-            result[f"switch_{category}_{module_id}"] = form[f"{strategy_prefix}_switch_{category}_{module_id}"]
+            result[f"switch_{category}_{module_id}"] = 规范化布尔值(
+                form[f"{strategy_prefix}_switch_{category}_{module_id}"]
+            )
     config = 读取正式配置()
     result["module_params"] = {}
     for category, items in 模块显示顺序.items():
         result["module_params"][category] = {}
         for module_id, _label in items:
             params = {}
-            for param_key in 模块参数字典(config, category, module_id):
-                params[param_key] = form[模块参数表单键(strategy_prefix, category, module_id, param_key)]
+            for param_key, default_value in 模块参数字典(config, category, module_id).items():
+                value = form[模块参数表单键(strategy_prefix, category, module_id, param_key)]
+                params[param_key] = (
+                    规范化布尔值(value) if isinstance(default_value, bool) else value
+                )
             result["module_params"][category][module_id] = params
     return result
 
