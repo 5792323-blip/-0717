@@ -44,12 +44,29 @@ adaptive-phase1-infrastructure
 ## 其他未关闭事项
 
 - BUG-P1-011
-- BUG-P1-PERSISTENCE-ATOMICITY
 - TEST-INFRA-P1-014
+- TEST-INFRA-P2-OPENPYXL-DEPENDENCY
+- TEST-INFRA-P2-ZERO-APPROVAL-FIXTURE
 - TEST-P2-017
 - DESIGN-P2-018
 - COMPAT-P2-019
 - TEST-P2-020
+
+### TEST-INFRA-P2-OPENPYXL-DEPENDENCY
+
+状态：BLOCKED-DEFINITION-MISSING（由 TEST-INFRA-P1-014 候选拆分）
+
+证据：默认 `.venv` 收集 `tests/test_public_fundamentals_updater.py` 时缺少 `openpyxl`；`.venv-1` 已安装该依赖且目标测试通过。根 requirements 未声明该依赖，只有 `基本面/requirements-public-data.txt` 声明。
+
+缺失定义：是否要求默认测试环境安装公开数据更新器的可选依赖，还是该测试必须显式跳过/隔离可选依赖；缺少唯一环境契约、允许修改文件和验收条件。
+
+### TEST-INFRA-P2-ZERO-APPROVAL-FIXTURE
+
+状态：BLOCKED-DEFINITION-MISSING（由 TEST-INFRA-P1-014 候选拆分）
+
+证据：真实零审批路径懒创建审批日志；测试夹具强制读取不存在的 `审批对账.jsonl` 并要求非空，导致 `FileNotFoundError`。零审批账户、持仓和审批统计事实保持一致。
+
+缺失定义：零审批场景的测试契约（允许日志不存在还是要求空文件）、允许修改的测试范围和验收条件；当前没有生产缺陷证据。
 
 ## 全局规则
 
