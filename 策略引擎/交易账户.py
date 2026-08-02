@@ -133,6 +133,8 @@ class 股票账户视图:
         return available, limits
 
     def 记录审批(self, **row):
+        if not row.get("approval_id"):
+            row["approval_id"] = self.账户.生成审批ID()
         result = str(row.get("结果", ""))
         success_results = {"通过", "已通过", "成交", "实际成交", "全部成交", "部分成交"}
         if result not in success_results and ("拒绝" in result or row.get("原因")):
@@ -193,11 +195,17 @@ class 交易账户:
         self.审批记录 = []
         self.审批统计 = defaultdict(int)
         self.拒绝序号 = 0
+        self.审批序号 = 0
         self._last_approval_cash = self.现金
         self._last_approval_positions = {}
 
     def 股票视图(self, stock):
         return 股票账户视图(self, stock)
+
+    def 生成审批ID(self):
+        """Allocate a unique approval identifier within this account scope."""
+        self.审批序号 += 1
+        return f"A{self.审批序号:08d}"
 
     def 持仓市值(self):
         total = 0.0

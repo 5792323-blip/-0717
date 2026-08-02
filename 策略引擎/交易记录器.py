@@ -171,7 +171,7 @@ class 交易记录器:
     def 记录买入(self, 买入价, 信号类型, 信号质量分, 仓位, 
                哨兵价, 哨兵价触发价, 前复权买入价=None, 前复权成交价=None, 日期='', 时间='',
                成交数量=None, 交易费用=None, 总成本=None, 持仓组ID=None,
-               网格级别=0, 加仓后总持仓=None, execution_id=None):
+               网格级别=0, 加仓后总持仓=None, execution_id=None, approval_id=None):
         """记录一笔买入"""
         成交时间 = 规范化成交时间(时间, 日期)
         if execution_id is not None:
@@ -193,6 +193,7 @@ class 交易记录器:
             "intent_id": f"I{self.意图序号:08d}",
             "order_id": f"O{self.订单序号:08d}",
             "execution_id": execution_id,
+            "approval_id": approval_id,
             "rejection_id": None,
             "序号": self.买入序号,
             "持仓组ID": 持仓组ID,
@@ -247,7 +248,7 @@ class 交易记录器:
 
     def 记录卖出(self, 卖出价, 卖出原因, 盈亏比例, 持有K线数,
                站岗价=None, ATR缓冲价=None, RSI峰值=None, 日期='', 时间='',
-               仓位=None, 成交数量=None, 持仓组ID=None, execution_id=None):
+               仓位=None, 成交数量=None, 持仓组ID=None, execution_id=None, approval_id=None):
         """记录一笔卖出"""
         成交时间 = 规范化成交时间(时间, 日期)
         if execution_id is not None:
@@ -260,6 +261,7 @@ class 交易记录器:
             "intent_id": f"I{self.意图序号:08d}",
             "order_id": f"O{self.订单序号:08d}",
             "execution_id": execution_id,
+            "approval_id": approval_id,
             "rejection_id": None,
             "序号": self.买入序号,
             "持仓组ID": 持仓组ID,
