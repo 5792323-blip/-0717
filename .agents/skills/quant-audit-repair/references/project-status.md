@@ -94,6 +94,16 @@ adaptive-phase1-infrastructure
 
 缺失人工信息：唯一 expected/actual、复现步骤、契约、允许文件范围和验收条件。不得映射到其他候选问题。
 
+### DESIGN-P2-018
+
+状态：BLOCKED-DEFINITION-MISSING
+
+证据：截至稳定 HEAD `987d6f7e1c7f26c97da2132e0db6a9ce5b839738`，编号仅存在于状态清单；全量历史、代码、测试、文档、提交消息、分支和 tag 无唯一问题定义。
+
+已排除的设计候选：ARCH-001（run_id 贯穿）、ARCH-002（报表兼容重算）、ARCH-003（单股/组合收益事实双路径）。均无与该编号的唯一映射。
+
+缺失人工信息：原始设计目标、唯一设计契约、expected/actual、允许文件范围、确定性复现或验收条件。
+
 ## 全局规则
 
 - 一个问题一个测试 commit。
