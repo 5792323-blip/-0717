@@ -1368,6 +1368,7 @@ class 规则执行器:
                 return value
         scope = getattr(self.账户, "_execution_scope", None)
         return {
+            "owner": self,
             "executor": {key: copy_value(value) for key, value in self.__dict__.items() if key not in excluded},
             "account": {
                 "现金": self.账户.现金,
@@ -1403,15 +1404,18 @@ class 规则执行器:
 
     def _合并嵌套事务变更(self, target, before, after):
         """Restore the outer savepoint while retaining committed nested work."""
-        before_executor = before["executor"]
-        after_executor = after["executor"]
-        target_executor = target["executor"]
-        for key, value in after_executor.items():
-            if key not in before_executor or self._事务值不同(value, before_executor[key]):
-                target_executor[key] = deepcopy(value)
-        for key in set(before_executor) - set(after_executor):
-            if key in target_executor:
-                target_executor.pop(key, None)
+        nested_owner = before.get("owner")
+        same_executor = nested_owner is self
+        if same_executor:
+            before_executor = before["executor"]
+            after_executor = after["executor"]
+            target_executor = target["executor"]
+            for key, value in after_executor.items():
+                if key not in before_executor or self._事务值不同(value, before_executor[key]):
+                    target_executor[key] = deepcopy(value)
+            for key in set(before_executor) - set(after_executor):
+                if key in target_executor:
+                    target_executor.pop(key, None)
 
         before_account = before["account"]
         after_account = after["account"]
@@ -1437,8 +1441,13 @@ class 规则执行器:
                             position["股数"] = 0
                             holdings[key] = position
                         position["股数"] = int(position.get("股数", 0) or 0) + quantity_delta
+                        if position["股数"] <= 0:
+                            holdings.pop(key, None)
                 elif key not in before_account["持仓"]:
                     holdings[key] = deepcopy(after_position)
+            for key, position in list(holdings.items()):
+                if isinstance(position, dict) and "股数" in position and int(position.get("股数", 0) or 0) <= 0:
+                    holdings.pop(key, None)
         if len(after_account["审批记录"]) >= len(before_account["审批记录"]):
             target_account["审批记录"].extend(
                 deepcopy(after_account["审批记录"][len(before_account["审批记录"]):])
@@ -1451,37 +1460,37 @@ class 规则执行器:
             if delta:
                 target_account["审批统计"][key] = target_account["审批统计"].get(key, 0) + delta
 
-        before_recorder = before["recorder"]
-        after_recorder = after["recorder"]
-        target_recorder = target["recorder"]
-        for key, value in after_recorder.items():
-            if key in {"交易列表", "持仓记录"}:
-                continue
-            if self._事务值不同(value, before_recorder.get(key)):
-                target_recorder[key] = deepcopy(value)
-        for key in ("交易列表", "持仓记录"):
-            before_items = before_recorder[key]
-            after_items = after_recorder[key]
-            if len(after_items) >= len(before_items):
-                target_recorder[key].extend(deepcopy(after_items[len(before_items):]))
-            else:
-                target_recorder[key] = deepcopy(after_items)
+        if same_executor:
+            before_recorder = before["recorder"]
+            after_recorder = after["recorder"]
+            target_recorder = target["recorder"]
+            for key, value in after_recorder.items():
+                if key in {"交易列表", "持仓记录"}:
+                    continue
+                if self._事务值不同(value, before_recorder.get(key)):
+                    target_recorder[key] = deepcopy(value)
+            for key in ("交易列表", "持仓记录"):
+                before_items = before_recorder[key]
+                after_items = after_recorder[key]
+                if len(after_items) >= len(before_items):
+                    target_recorder[key].extend(deepcopy(after_items[len(before_items):]))
+                else:
+                    target_recorder[key] = deepcopy(after_items)
 
         before_scope = before.get("scope")
         after_scope = after.get("scope")
         target_scope = target.get("scope")
         if before_scope is not None and after_scope is not None and target_scope is not None:
             target_scope["execution_ids"].update(
-                after_scope["execution_ids"] - before_scope["execution_ids"]
-            )
-            target_scope["execution_ids"].difference_update(
-                before_scope["execution_ids"] - after_scope["execution_ids"]
+                after_scope["committed_execution_ids"] - before_scope["committed_execution_ids"]
             )
             target_scope["pending_execution_ids"].update(
-                after_scope["pending_execution_ids"]
+                {
+                    execution_id: pending
+                    for execution_id, pending in after_scope["pending_execution_ids"].items()
+                    if execution_id not in before_scope["pending_execution_ids"]
+                }
             )
-            for execution_id in set(before_scope["pending_execution_ids"]) - set(after_scope["pending_execution_ids"]):
-                target_scope["pending_execution_ids"].pop(execution_id, None)
             target_scope["committed_execution_ids"].update(
                 after_scope["committed_execution_ids"] - before_scope["committed_execution_ids"]
             )
