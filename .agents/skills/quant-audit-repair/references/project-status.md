@@ -78,6 +78,22 @@ adaptive-phase1-infrastructure
 
 缺失人工信息：原始兼容场景、唯一 expected/actual、确定性复现步骤、允许文件范围和验收条件。
 
+### TEST-P2-017
+
+状态：BLOCKED-DEFINITION-MISSING
+
+证据：截至稳定 HEAD `987d6f7e1c7f26c97da2132e0db6a9ce5b839738`，编号仅存在于状态清单；全量 Git、代码、测试和文档无原始定义。
+
+缺失人工信息：唯一 expected/actual、复现步骤、契约、允许文件范围和验收条件。不得映射到其他候选问题。
+
+### TEST-P2-020
+
+状态：BLOCKED-DEFINITION-MISSING
+
+证据：截至稳定 HEAD `987d6f7e1c7f26c97da2132e0db6a9ce5b839738`，编号仅存在于状态清单；全量 Git、代码、测试和文档无原始定义。
+
+缺失人工信息：唯一 expected/actual、复现步骤、契约、允许文件范围和验收条件。不得映射到其他候选问题。
+
 ## 全局规则
 
 - 一个问题一个测试 commit。
