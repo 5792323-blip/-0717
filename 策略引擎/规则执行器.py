@@ -184,6 +184,9 @@ class 规则执行器:
                             row.setdefault(field, latest[field])
             self.账户视图.记录审批(**row)
 
+    def _新审批ID(self):
+        return self.账户.生成审批ID() if hasattr(self.账户, "生成审批ID") else None
+
     @staticmethod
     def _拒绝分类(row):
         text = str(row.get('原因', '') or '')
@@ -1371,6 +1374,7 @@ class 规则执行器:
                 "审批记录": deepcopy(self.账户.审批记录),
                 "审批统计": deepcopy(self.账户.审批统计),
                 "拒绝序号": self.账户.拒绝序号,
+                "审批序号": getattr(self.账户, "审批序号", 0),
                 "last_approval_cash_exists": hasattr(self.账户, "_last_approval_cash"),
                 "last_approval_cash": getattr(self.账户, "_last_approval_cash", None),
                 "last_approval_positions_exists": hasattr(self.账户, "_last_approval_positions"),
@@ -1401,6 +1405,7 @@ class 规则执行器:
         self.账户.审批统计.clear()
         self.账户.审批统计.update(snapshot["account"]["审批统计"])
         self.账户.拒绝序号 = snapshot["account"]["拒绝序号"]
+        self.账户.审批序号 = snapshot["account"]["审批序号"]
         if snapshot["account"]["last_approval_cash_exists"]:
             self.账户._last_approval_cash = snapshot["account"]["last_approval_cash"]
         elif hasattr(self.账户, "_last_approval_cash"):
@@ -1794,6 +1799,7 @@ class 规则执行器:
                 self.交易记录器.预留成交ID()
                 if hasattr(self.交易记录器, "预留成交ID") else None
             )
+            approval_id = self._新审批ID()
         except ValueError:
             self.本根决策 = {}
             raise
@@ -1884,6 +1890,7 @@ class 规则执行器:
             网格级别=网格级别,
             加仓后总持仓=加仓后总持仓,
             execution_id=execution_id,
+            approval_id=approval_id,
         )
         self.本根决策["决策记录"]["买入"].update({
             "成交价": 买入价,
@@ -1921,6 +1928,7 @@ class 规则执行器:
             信号类型=信号类型 or self.哨兵价形成类型,
             账户限制=账户限制,
             时间=成交时间,
+            approval_id=approval_id,
         )
         if not hasattr(self, '_本根已买入股票'):
             self._本根已买入股票 = set()
@@ -2753,6 +2761,7 @@ class 规则执行器:
             self.交易记录器.预留成交ID()
             if hasattr(self.交易记录器, "预留成交ID") else None
         )
+        approval_id = self._新审批ID()
         
         self.当前现金 += 卖出净金额
         # ★ 修复: 安全删除持仓，防止键值不匹配
@@ -2784,6 +2793,7 @@ class 规则执行器:
             成交数量=卖出股数,
             持仓组ID=持仓.get('持仓组ID'),
             execution_id=execution_id,
+            approval_id=approval_id,
         )
         self.本根决策["决策记录"]["卖出"].update({
             "成交价": 卖出价,
@@ -2808,6 +2818,7 @@ class 规则执行器:
             交易费用=卖出费用, 成交净额=卖出净金额, 盈亏比例=实际盈亏比例,
             网格层级=int(持仓.get('网格_已加仓次数', 0) or 0),
             时间=成交时间,
+            approval_id=approval_id,
         )
         return True
     
