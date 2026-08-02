@@ -11,6 +11,7 @@ adaptive-phase1-infrastructure
 - BUG-P1-005B
 - BUG-P1-005C
 - CONFIG-P2-BOOL-NORMALIZATION
+- BUG-P1-PERSISTENCE-ATOMICITY
 - CONFIG-P2-BOOL-NORMALIZATION
 - 市场流动性观察 UI
 - 默认严格预挂单配置契约
@@ -19,7 +20,7 @@ adaptive-phase1-infrastructure
 
 ### BUG-P1-PERSISTENCE-ATOMICITY
 
-状态：待 Gate 2 定义审计。
+状态：已关闭。正式三 YAML 保存已具备临时 staging、备份替换、失败回滚和残留清理；Gate 6 通过并已合并。
 
 严重级别：P1；当前稳定 HEAD：`e96ba2bacef8cf560d57a76a976dbfb3292ff35a`。
 

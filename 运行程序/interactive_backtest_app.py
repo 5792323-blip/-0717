@@ -2347,6 +2347,49 @@ def 写入_yaml(path, data):
         yaml.safe_dump(data, target, allow_unicode=True, sort_keys=False)
 
 
+def 原子写入_yaml集合(items):
+    """先写入临时文件，再替换正式文件；任一步失败都恢复原始字节。"""
+    staged = []
+    backups = {}
+    committed = set()
+    try:
+        for path, data in items:
+            temp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+            staged.append((path, temp_path))
+            写入_yaml(temp_path, data)
+
+        try:
+            for path, temp_path in staged:
+                if os.path.exists(path):
+                    backup_path = f"{path}.{uuid.uuid4().hex}.bak"
+                    os.replace(path, backup_path)
+                    backups[path] = backup_path
+                os.replace(temp_path, path)
+                committed.add(path)
+        except Exception:
+            for path, _temp_path in reversed(staged):
+                backup_path = backups.get(path)
+                if path in committed or (backup_path and os.path.exists(path)):
+                    try:
+                        os.unlink(path)
+                    except FileNotFoundError:
+                        pass
+                if backup_path and os.path.exists(backup_path):
+                    os.replace(backup_path, path)
+            raise
+    finally:
+        for _path, temp_path in staged:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+        for backup_path in backups.values():
+            try:
+                os.unlink(backup_path)
+            except FileNotFoundError:
+                pass
+
+
 def 读取正式配置():
     return {
         "买入信号配置": 读取_yaml(os.path.join(正式配置目录, "买入信号配置.yaml")),
@@ -3323,9 +3366,11 @@ def 保存入场时序到正式配置(form):
     switches["模块类别"]["核心模块"].setdefault("next_bar_entry", {})["启用"] = next_bar
     core["核心模块"]["本根形成立即成交"]["启用"] = same_bar
     core["核心模块"]["下一根执行"]["启用"] = next_bar
-    写入_yaml(parameters_path, parameters)
-    写入_yaml(switches_path, switches)
-    写入_yaml(core_path, core)
+    原子写入_yaml集合([
+        (parameters_path, parameters),
+        (switches_path, switches),
+        (core_path, core),
+    ])
 
 
 def 提取模式配置(form, prefix):
