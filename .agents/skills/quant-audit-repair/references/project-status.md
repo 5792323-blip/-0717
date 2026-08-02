@@ -17,7 +17,7 @@ adaptive-phase1-infrastructure
 ### BUG-P1-005C
 
 状态：
-D 已建立审批与 execution 显式关联红测试。
+D/E 已完成审批与 execution 显式关联、执行时序兼容及共享账户嵌套/交错回滚修复；Gate 6 统一矩阵通过，待合并关闭。
 
 红测试分支：
 test-bug-p1-005c-approval-link
@@ -32,7 +32,7 @@ test-bug-p1-005c-approval-link
 1 passed, 6 failed
 
 当前阶段：
-等待 A 对红测试进行正式核验；未批准 E 修改生产代码。
+Gate 7 合并与状态关闭。
 
 注意：红测试未合并到稳定分支；若稳定分支继续前进，E 开始前由 A 判断是否需要基于最新稳定分支重放或重新验证。
 
